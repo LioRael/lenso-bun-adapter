@@ -16,8 +16,8 @@ use lenso_auth_sdk::{
 };
 use lenso_bun_adapter::{BunAdapter, BunCapabilityCodec, BunWire};
 use lenso_capability_auth::{
-    AUTHENTICATE_OPERATION, Auth, AuthEndpoint, AuthError, AuthProvider, AuthRequest, AuthResponse,
-    CAPABILITY_ID as AUTH_ID, DESCRIPTOR_VERSION as AUTH_VERSION,
+    AUTHENTICATE_OPERATION, Auth, AuthEndpoint, AuthError, AuthInvocationError, AuthProvider,
+    AuthRequest, AuthResponse, CAPABILITY_ID as AUTH_ID, DESCRIPTOR_VERSION as AUTH_VERSION,
 };
 use lenso_capability_secure_greeting::{
     CAPABILITY_ID, DESCRIPTOR_VERSION, GREET_OPERATION, GreetError, GreetRequest, GreetResponse,
@@ -122,12 +122,14 @@ impl AuthProvider for NativeAuthProvider {
         &self,
         _context: lenso_kernel::InvocationContext,
         request: AuthRequest,
-    ) -> LocalBoxFuture<'static, Result<AuthResponse, AuthError>> {
+    ) -> LocalBoxFuture<'static, Result<AuthResponse, AuthInvocationError>> {
         let issuer = self.issuer.clone();
         Box::pin(async move {
-            let credential = request.credential.ok_or(AuthError::Invalid)?;
+            let credential = request
+                .credential
+                .ok_or(AuthInvocationError::Domain(AuthError::Invalid))?;
             if credential.scheme != "bearer" {
-                return Err(AuthError::Unsupported);
+                return Err(AuthInvocationError::Domain(AuthError::Unsupported));
             }
             let now = OffsetDateTime::now_utc();
             let (subject, validity) = match credential.value.as_str() {
@@ -143,7 +145,7 @@ impl AuthProvider for NativeAuthProvider {
                     "user-123",
                     Validity::new(now - Duration::minutes(2), now - Duration::minutes(1)),
                 ),
-                _ => return Err(AuthError::Invalid),
+                _ => return Err(AuthInvocationError::Domain(AuthError::Invalid)),
             };
             let assertion = issuer.issue(
                 subject,
