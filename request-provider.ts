@@ -3,6 +3,15 @@ import {
   encodeGreetError,
   encodeGreetResponse,
 } from "../../crates/lenso-capability-greeting/generated/bindings.ts";
+import {
+  decodeGreetRequest as decodeSecureGreetRequest,
+  encodeGreetError as encodeSecureGreetError,
+  encodeGreetResponse as encodeSecureGreetResponse,
+} from "../../crates/lenso-capability-secure-greeting/generated/bindings.ts";
+import {
+  bindActor,
+  type WireExtension,
+} from "../../crates/lenso-auth-sdk/typescript/actor.ts";
 
 type EndpointDescriptor = {
   capability_id: string;
@@ -26,6 +35,7 @@ type WireRequest = {
   deadline_nanos?: number;
   caller_instance?: string;
   session?: string;
+  extensions?: WireExtension[];
   payload: unknown;
 };
 
@@ -46,6 +56,11 @@ const protocolVersion = 1;
 const valueProfile = "lenso-json-value-v1";
 const greetingEndpoint: EndpointDescriptor = {
   capability_id: "example.greeting@1",
+  descriptor_version: "1.0.0",
+  operations: ["greet"],
+};
+const secureGreetingEndpoint: EndpointDescriptor = {
+  capability_id: "example.secure-greeting@1",
   descriptor_version: "1.0.0",
   operations: ["greet"],
 };
@@ -135,10 +150,56 @@ async function handleRequest(request: WireRequest): Promise<WireOutcome> {
   if (cancelled.has(request.request_id)) {
     return runtime("cancelled", undefined, request.request_id);
   }
-  if (
-    request.capability_id !== greetingEndpoint.capability_id ||
-    request.operation !== "greet"
-  ) {
+  if (request.operation !== "greet") {
+    return {
+      kind: "runtime",
+      failure: { kind: "unknown_operation", operation: request.operation },
+    };
+  }
+
+  if (request.capability_id === secureGreetingEndpoint.capability_id) {
+    let typedRequest: { name: string };
+    try {
+      typedRequest = decodeSecureGreetRequest(JSON.stringify(request.payload));
+    } catch (error) {
+      return runtime("protocol_violation", String(error));
+    }
+    let actor: { subject: string };
+    try {
+      actor = await bindActor(
+        request.extensions,
+        secureGreetingEndpoint.capability_id,
+        "greet",
+        "auth.users",
+        "shared-auth-key",
+        "user",
+      );
+    } catch {
+      return {
+        kind: "domain",
+        value: JSON.parse(encodeSecureGreetError("actor_required")),
+      };
+    }
+    if (actor.subject === "forbidden") {
+      return {
+        kind: "domain",
+        value: JSON.parse(encodeSecureGreetError("not_allowed")),
+      };
+    }
+    if (typedRequest.name.length === 0) {
+      return {
+        kind: "domain",
+        value: JSON.parse(encodeSecureGreetError("empty_name")),
+      };
+    }
+    return {
+      kind: "success",
+      value: JSON.parse(
+        encodeSecureGreetResponse({ message: `Hello from Bun, ${actor.subject}!` }),
+      ),
+    };
+  }
+  if (request.capability_id !== greetingEndpoint.capability_id) {
     return {
       kind: "runtime",
       failure: { kind: "unknown_operation", operation: request.operation },
