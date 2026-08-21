@@ -11,14 +11,20 @@ use futures::{FutureExt, future::LocalBoxFuture};
 use lenso_app_plan::{ExecutionClassId, ModuleInstancePlan, ResolvedAppPlan};
 use lenso_kernel::{
     ActivateContext, DeactivateContext, ManagedResource, ModuleFuture, ModuleLifecycle,
-    NativeRequestEndpoint, PreparedBinding, PreparedNativeApp, PreparedNativeModule,
+    NativeRequestEndpoint, NativeStreamEndpoint, NativeStreamItem, NativeStreamSession,
+    PreparedBinding, PreparedNativeApp, PreparedNativeModule, PreparedStreamBinding,
     RuntimeFailure,
 };
 use serde_json::Value;
 
 use crate::{
-    protocol::{EndpointDescriptor, WireOutcome, WireRequest, from_wire_failure, handshake_for},
-    transport::{ProcessState, TransportClient, open_transport, spawn_process},
+    protocol::{
+        DEFAULT_STREAM_CREDIT, EndpointDescriptor, WireOutcome, WireRequest, WireStreamOpen,
+        WireStreamOutcome, from_wire_failure, handshake_for,
+    },
+    transport::{
+        ProcessState, TransportClient, TransportStreamSession, open_transport, spawn_process,
+    },
 };
 
 pub use crate::transport::BunWire;
@@ -31,6 +37,14 @@ pub trait BunCapabilityCodec: std::fmt::Debug + 'static {
     fn descriptor_version(&self) -> &'static str;
     /// Exact generated Operation table.
     fn operations(&self) -> &'static [&'static str];
+    /// Exact stream Operation table; request-only codecs default to no streams.
+    fn stream_operations(&self) -> &'static [&'static str] {
+        &[]
+    }
+    /// Exact request Operation table; mixed descriptors can override the default.
+    fn request_operations(&self) -> &'static [&'static str] {
+        self.operations()
+    }
     /// Converts one generated request value to a validated portable JSON value.
     fn encode_request(&self, operation: &str, request: &dyn Any) -> Result<Value, RuntimeFailure>;
     /// Converts a successful portable JSON value to the generated response value.
@@ -45,6 +59,32 @@ pub trait BunCapabilityCodec: std::fmt::Debug + 'static {
         operation: &str,
         value: Value,
     ) -> Result<Box<dyn Any>, RuntimeFailure>;
+    /// Converts one stream open value to a validated portable JSON value.
+    fn encode_stream_open(
+        &self,
+        operation: &str,
+        request: &dyn Any,
+    ) -> Result<Value, RuntimeFailure> {
+        self.encode_request(operation, request)
+    }
+    /// Converts one generated stream message to a validated portable JSON value.
+    fn encode_stream_message(
+        &self,
+        _operation: &str,
+        _message: &dyn Any,
+    ) -> Result<Value, RuntimeFailure> {
+        Err(RuntimeFailure::ProtocolViolation {
+            capability: self.capability_id(),
+        })
+    }
+    /// Converts one portable JSON stream message to its generated value.
+    fn decode_stream_message(
+        &self,
+        operation: &str,
+        value: Value,
+    ) -> Result<Box<dyn Any>, RuntimeFailure> {
+        self.decode_response(operation, value)
+    }
 }
 
 /// Configuration owned by one Bun Execution Adapter package.
@@ -166,9 +206,20 @@ impl BunAdapter {
                 .iter()
                 .map(|operation| (*operation).to_owned())
                 .collect();
+            let stream_operations: Vec<_> = codec
+                .stream_operations()
+                .iter()
+                .map(|operation| (*operation).to_owned())
+                .collect();
             let expected_operations: Vec<_> = endpoint.operations().to_vec();
+            let expected_stream_operations: Vec<_> = endpoint
+                .stream_operations()
+                .iter()
+                .map(|operation| (*operation).to_owned())
+                .collect();
             if codec.descriptor_version() != endpoint.descriptor_version()
                 || operations != expected_operations
+                || stream_operations != expected_stream_operations
             {
                 return Err(RuntimeFailure::ProtocolViolation {
                     capability: codec.capability_id(),
@@ -178,6 +229,7 @@ impl BunAdapter {
                 capability_id: endpoint.capability_id().to_owned(),
                 descriptor_version: endpoint.descriptor_version().to_owned(),
                 operations,
+                stream_operations,
             });
             capability_ids.insert(endpoint.capability_id().to_owned(), codec.capability_id());
             codecs.push(codec.clone());
@@ -203,18 +255,33 @@ impl BunAdapter {
         let endpoints = instance
             .provided_capabilities()
             .iter()
-            .zip(codecs)
+            .zip(codecs.iter())
+            .filter(|(_, codec)| !codec.request_operations().is_empty())
             .map(|(descriptor, codec)| {
                 Rc::new(BunRequestEndpoint {
                     capability: descriptor.capability_id().to_owned(),
-                    codec,
+                    codec: codec.clone(),
                     transport: transport.clone(),
                 }) as Rc<dyn NativeRequestEndpoint>
             })
             .collect();
-        Ok(PreparedNativeModule::with_lifecycle(
+        let stream_endpoints = instance
+            .provided_capabilities()
+            .iter()
+            .zip(codecs.iter())
+            .filter(|(_, codec)| !codec.stream_operations().is_empty())
+            .map(|(descriptor, codec)| {
+                Rc::new(BunStreamEndpoint {
+                    capability: descriptor.capability_id().to_owned(),
+                    codec: codec.clone(),
+                    transport: transport.clone(),
+                }) as Rc<dyn NativeStreamEndpoint>
+            })
+            .collect();
+        Ok(PreparedNativeModule::with_endpoints(
             endpoints,
-            Rc::new(BunModuleLifecycle { transport }),
+            stream_endpoints,
+            BunModuleLifecycle { transport },
         ))
     }
 
@@ -277,6 +344,7 @@ impl lenso_kernel::ExecutionAdapter for BunAdapter {
             })?;
         let mut generations = BTreeMap::new();
         let mut endpoints = BTreeMap::new();
+        let mut stream_endpoints = BTreeMap::new();
         for instance in plan
             .module_instances()
             .iter()
@@ -285,6 +353,15 @@ impl lenso_kernel::ExecutionAdapter for BunAdapter {
             let generation = self.prepare_instance(instance)?;
             for endpoint in generation.endpoints() {
                 endpoints.insert(
+                    (
+                        instance.instance_key().to_owned(),
+                        endpoint.capability_id().to_owned(),
+                    ),
+                    endpoint.clone(),
+                );
+            }
+            for endpoint in generation.stream_endpoints() {
+                stream_endpoints.insert(
                     (
                         instance.instance_key().to_owned(),
                         endpoint.capability_id().to_owned(),
@@ -313,7 +390,26 @@ impl lenso_kernel::ExecutionAdapter for BunAdapter {
                     })
             })
             .collect();
-        Ok(PreparedNativeApp::new(bindings, generations))
+        let prepared_stream_bindings = plan
+            .capability_bindings()
+            .iter()
+            .filter_map(|binding| {
+                stream_endpoints
+                    .get(&(
+                        binding.provider_instance().to_owned(),
+                        binding.capability_id().to_owned(),
+                    ))
+                    .map(|endpoint| {
+                        PreparedStreamBinding::new(
+                            binding.consumer_instance(),
+                            binding.provider_instance(),
+                            endpoint.clone(),
+                        )
+                    })
+            })
+            .collect();
+        Ok(PreparedNativeApp::new(bindings, generations)
+            .with_stream_bindings(prepared_stream_bindings))
     }
 
     fn recreate(
@@ -349,7 +445,7 @@ impl NativeRequestEndpoint for BunRequestEndpoint {
     }
 
     fn operations(&self) -> &'static [&'static str] {
-        self.codec.operations()
+        self.codec.request_operations()
     }
 
     fn invoke(
@@ -358,7 +454,7 @@ impl NativeRequestEndpoint for BunRequestEndpoint {
         request: Box<dyn Any>,
         context: lenso_kernel::InvocationContext,
     ) -> LocalBoxFuture<'static, Result<Result<Box<dyn Any>, Box<dyn Any>>, RuntimeFailure>> {
-        if !self.codec.operations().contains(&operation) {
+        if !self.codec.request_operations().contains(&operation) {
             return Box::pin(futures::future::ready(Err(
                 RuntimeFailure::UnknownOperation {
                     capability: self.codec.capability_id(),
@@ -394,6 +490,158 @@ impl NativeRequestEndpoint for BunRequestEndpoint {
                 WireOutcome::Runtime { failure } => {
                     Err(from_wire_failure(codec.capability_id(), failure))
                 }
+            }
+        })
+    }
+}
+
+#[derive(Debug)]
+struct BunStreamEndpoint {
+    capability: String,
+    codec: Rc<dyn BunCapabilityCodec>,
+    transport: TransportClient,
+}
+
+#[derive(Debug)]
+struct BunStreamSession {
+    inner: Rc<dyn NativeStreamSession>,
+    codec: Rc<dyn BunCapabilityCodec>,
+    operation: String,
+}
+
+impl NativeStreamSession for BunStreamSession {
+    fn send(&self, message: Box<dyn Any>) -> LocalBoxFuture<'static, Result<(), RuntimeFailure>> {
+        let payload = match self
+            .codec
+            .encode_stream_message(&self.operation, message.as_ref())
+        {
+            Ok(payload) => payload,
+            Err(error) => return Box::pin(futures::future::ready(Err(error))),
+        };
+        self.inner.send(Box::new(payload))
+    }
+
+    fn receive(&self) -> LocalBoxFuture<'static, Result<NativeStreamItem, RuntimeFailure>> {
+        let inner = self.inner.clone();
+        let codec = self.codec.clone();
+        let operation = self.operation.clone();
+        Box::pin(async move {
+            match inner.receive().await? {
+                NativeStreamItem::Message(message) => {
+                    let payload = message.downcast::<Value>().map_err(|_| {
+                        RuntimeFailure::ProtocolViolation {
+                            capability: codec.capability_id(),
+                        }
+                    })?;
+                    codec
+                        .decode_stream_message(&operation, *payload)
+                        .map(NativeStreamItem::Message)
+                }
+                NativeStreamItem::PeerHalfClosed => Ok(NativeStreamItem::PeerHalfClosed),
+                NativeStreamItem::Terminal(outcome) => match outcome {
+                    Ok(()) => Ok(NativeStreamItem::Terminal(Ok(()))),
+                    Err(error) => {
+                        let payload = error.downcast::<Value>().map_err(|_| {
+                            RuntimeFailure::ProtocolViolation {
+                                capability: codec.capability_id(),
+                            }
+                        })?;
+                        codec
+                            .decode_domain_error(&operation, *payload)
+                            .map(|error| NativeStreamItem::Terminal(Err(error)))
+                    }
+                },
+            }
+        })
+    }
+
+    fn close_send(&self) -> LocalBoxFuture<'static, Result<(), RuntimeFailure>> {
+        self.inner.close_send()
+    }
+
+    fn cancel(&self) {
+        self.inner.cancel();
+    }
+}
+
+impl NativeStreamEndpoint for BunStreamEndpoint {
+    fn capability_id(&self) -> &'static str {
+        self.codec.capability_id()
+    }
+
+    fn descriptor_version(&self) -> &'static str {
+        self.codec.descriptor_version()
+    }
+
+    fn operations(&self) -> &'static [&'static str] {
+        self.codec.stream_operations()
+    }
+
+    fn open(
+        &self,
+        operation: &str,
+        request: Box<dyn Any>,
+        context: lenso_kernel::InvocationContext,
+    ) -> LocalBoxFuture<
+        'static,
+        Result<Result<Box<dyn NativeStreamSession>, Box<dyn Any>>, RuntimeFailure>,
+    > {
+        if !self.codec.stream_operations().contains(&operation) {
+            return Box::pin(futures::future::ready(Err(
+                RuntimeFailure::UnknownOperation {
+                    capability: self.codec.capability_id(),
+                    operation: operation.to_owned(),
+                },
+            )));
+        }
+        let payload = match self.codec.encode_stream_open(operation, request.as_ref()) {
+            Ok(payload) => payload,
+            Err(error) => return Box::pin(futures::future::ready(Err(error))),
+        };
+        let operation = operation.to_owned();
+        let wire_request = WireStreamOpen {
+            request_id: context.request_id(),
+            stream_id: context.request_id(),
+            capability_id: self.capability.clone(),
+            operation: operation.clone(),
+            deadline_nanos: crate::protocol::deadline_nanos(context.deadline()),
+            caller_instance: context.caller_instance().map(ToOwned::to_owned),
+            session: None,
+            credit: DEFAULT_STREAM_CREDIT,
+            payload,
+        };
+        let call = match self.transport.open_stream(wire_request) {
+            Ok(call) => call,
+            Err(error) => return Box::pin(futures::future::ready(Err(error))),
+        };
+        let transport = self.transport.clone();
+        let codec = self.codec.clone();
+        Box::pin(async move {
+            match call.await? {
+                WireStreamOutcome::Opened { stream_id, credit } => {
+                    let session = TransportStreamSession::new(
+                        transport.clone(),
+                        stream_id,
+                        transport.session(),
+                        codec.capability_id(),
+                        operation.clone(),
+                        credit,
+                    );
+                    Ok(Ok(Box::new(BunStreamSession {
+                        inner: Rc::new(session),
+                        codec,
+                        operation,
+                    }) as Box<dyn NativeStreamSession>))
+                }
+                WireStreamOutcome::Domain { value } => {
+                    codec.decode_domain_error(&operation, value).map(Err)
+                }
+                WireStreamOutcome::Runtime { failure } => {
+                    Err(from_wire_failure(codec.capability_id(), failure))
+                }
+                _ => Err(RuntimeFailure::ProtocolViolation {
+                    capability: codec.capability_id(),
+                }),
             }
         })
     }

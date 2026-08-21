@@ -10,6 +10,7 @@ use serde_json::Value;
 pub const PROTOCOL_VERSION: u32 = 1;
 pub const DEFAULT_MAX_FRAME_BYTES: usize = 64 * 1024;
 pub const DEFAULT_REQUEST_QUEUE_CAPACITY: usize = 32;
+pub const DEFAULT_STREAM_CREDIT: u32 = 16;
 pub const VALUE_PROFILE: &str = "lenso-json-value-v1";
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -17,6 +18,8 @@ pub(crate) struct EndpointDescriptor {
     pub capability_id: String,
     pub descriptor_version: String,
     pub operations: Vec<String>,
+    #[serde(default)]
+    pub stream_operations: Vec<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -48,6 +51,67 @@ pub(crate) struct WireRequest {
     #[serde(default)]
     pub session: Option<String>,
     pub payload: Value,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct WireStreamOpen {
+    pub request_id: u64,
+    pub stream_id: u64,
+    pub capability_id: String,
+    pub operation: String,
+    pub deadline_nanos: Option<u64>,
+    pub caller_instance: Option<String>,
+    #[serde(default)]
+    pub session: Option<String>,
+    pub credit: u32,
+    pub payload: Value,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case")]
+pub(crate) enum WireStreamCall {
+    Send {
+        request_id: u64,
+        stream_id: u64,
+        session: String,
+        sequence: u64,
+        payload: Value,
+    },
+    Receive {
+        request_id: u64,
+        stream_id: u64,
+        session: String,
+    },
+    CloseSend {
+        request_id: u64,
+        stream_id: u64,
+        session: String,
+    },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(crate) enum WireStreamTerminal {
+    Success,
+    Domain { value: Value },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(crate) enum WireStreamEvent {
+    Message { sequence: u64, payload: Value },
+    PeerHalfClosed,
+    Terminal { outcome: WireStreamTerminal },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(crate) enum WireStreamOutcome {
+    Opened { stream_id: u64, credit: u32 },
+    Accepted { credit: u32 },
+    Event { event: WireStreamEvent },
+    Domain { value: Value },
+    Runtime { failure: WireFailure },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -110,6 +174,16 @@ pub(crate) enum FramedMessage {
     Handshake(Handshake),
     HandshakeAck(HandshakeAck),
     Request(WireRequest),
+    StreamOpen(WireStreamOpen),
+    StreamCall(WireStreamCall),
+    StreamCancel {
+        stream_id: u64,
+        session: String,
+    },
+    StreamResponse {
+        request_id: u64,
+        response: WireStreamOutcome,
+    },
     Cancel {
         request_id: u64,
     },
@@ -324,6 +398,7 @@ mod tests {
                 capability_id: "example.greeting@1".to_owned(),
                 descriptor_version: "1.0.0".to_owned(),
                 operations: vec!["greet".to_owned()],
+                stream_operations: Vec::new(),
             }],
             max_frame_bytes,
         )
@@ -366,6 +441,20 @@ mod tests {
         .expect("wire outcome should encode");
         assert_eq!(result["kind"], "success");
         assert_eq!(result["value"]["message"], "Hello");
+    }
+
+    #[test]
+    fn stream_call_frames_keep_the_action_discriminator() {
+        let value = serde_json::to_value(FramedMessage::StreamCall(WireStreamCall::Send {
+            request_id: 1,
+            stream_id: 2,
+            session: "session".to_owned(),
+            sequence: 0,
+            payload: serde_json::json!({"text": "hello"}),
+        }))
+        .expect("stream call should encode");
+        assert_eq!(value["kind"], "stream_call");
+        assert_eq!(value["action"], "send");
     }
 
     #[test]

@@ -13,5 +13,6 @@ mod transport;
 pub use adapter::{BunAdapter, BunAdapterConfig, BunCapabilityCodec, BunWire};
 pub use protocol::{DEFAULT_MAX_FRAME_BYTES, DEFAULT_REQUEST_QUEUE_CAPACITY, PROTOCOL_VERSION};
 pub use server::{
-    BunProviderDescriptor, BunProviderHandler, BunProviderServer, BunRequest, BunResponse,
+    BunProviderDescriptor, BunProviderHandler, BunProviderServer, BunProviderStream, BunRequest,
+    BunResponse, BunStreamAction, BunStreamEvent, BunStreamOpenResponse, BunStreamReceive,
 };

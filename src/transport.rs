@@ -1,4 +1,5 @@
 use std::{
+    any::Any,
     collections::{BTreeMap, BTreeSet},
     future::Future,
     io::{BufRead, BufReader, Write},
@@ -7,7 +8,7 @@ use std::{
     process::{Child, ChildStdin, ChildStdout},
     sync::{
         Arc, Mutex, Weak,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError},
     },
     task::{Context, Poll},
@@ -15,17 +16,19 @@ use std::{
     time::{Duration, Instant},
 };
 
-use futures::channel::oneshot;
+use futures::{channel::oneshot, future::LocalBoxFuture};
 use jsonrpsee::{
     core::client::{ClientT, Error as JsonRpcError},
     http_client::{HttpClient, HttpClientBuilder},
     rpc_params,
 };
-use lenso_kernel::RuntimeFailure;
+use lenso_kernel::{NativeStreamItem, NativeStreamSession, RuntimeFailure};
+use serde_json::Value;
 
 use crate::protocol::{
-    FramedMessage, Handshake, HandshakeAck, WireOutcome, WireRequest, encode_frame,
-    protocol_violation, read_frame, verify_handshake, write_frame,
+    FramedMessage, Handshake, HandshakeAck, WireOutcome, WireRequest, WireStreamCall,
+    WireStreamOpen, WireStreamOutcome, encode_frame, from_wire_failure, protocol_violation,
+    read_frame, verify_handshake, write_frame,
 };
 
 const HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
@@ -33,6 +36,8 @@ const PROCESS_STARTUP_TIMEOUT: Duration = Duration::from_secs(2);
 const PROCESS_STOP_TIMEOUT: Duration = Duration::from_secs(2);
 const MAX_CANCELLED_REQUEST_IDS: usize = 1024;
 const MAX_RETIRED_REQUEST_IDS: usize = 1024;
+const MAX_STREAM_CREDIT_WAITERS: usize = 64;
+static NEXT_STREAM_CALL_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Wire implementations evaluated by the Bun Adapter evidence spike.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -276,7 +281,9 @@ impl Drop for ProcessState {
 }
 
 type WireResult = Result<WireOutcome, RuntimeFailure>;
+type StreamWireResult = Result<WireStreamOutcome, RuntimeFailure>;
 type PendingResponses = Arc<Mutex<BTreeMap<u64, oneshot::Sender<WireResult>>>>;
+type PendingStreamResponses = Arc<Mutex<BTreeMap<u64, oneshot::Sender<StreamWireResult>>>>;
 type CapabilityIds = Arc<BTreeMap<String, &'static str>>;
 
 #[derive(Clone, Debug)]
@@ -286,6 +293,13 @@ pub(crate) enum TransportClient {
 }
 
 impl TransportClient {
+    pub(crate) fn session(&self) -> String {
+        match self {
+            Self::Framed(transport) => transport.session.clone(),
+            Self::JsonRpc(transport) => transport.session.clone(),
+        }
+    }
+
     pub(crate) fn request(&self, request: WireRequest) -> Result<WireCall, RuntimeFailure> {
         match self {
             Self::Framed(transport) => transport.request(request),
@@ -293,10 +307,96 @@ impl TransportClient {
         }
     }
 
+    pub(crate) fn open_stream(
+        &self,
+        mut request: WireStreamOpen,
+    ) -> Result<StreamCall, RuntimeFailure> {
+        request.session = Some(self.session());
+        let request_id = request.request_id;
+        let stream_id = request.stream_id;
+        let session = request.session.clone().unwrap_or_default();
+        let capability_name = request.capability_id.clone();
+        let operation = request.operation.clone();
+        match self {
+            Self::Framed(transport) => transport.stream_request(
+                FramedMessage::StreamOpen(request),
+                request_id,
+                stream_id,
+                session,
+                &capability_name,
+                &operation,
+            ),
+            Self::JsonRpc(transport) => transport.stream_request(
+                request_id,
+                stream_id,
+                session,
+                "lenso.stream.open",
+                serde_json::to_value(request).map_err(|_| protocol_violation(None))?,
+                "open",
+            ),
+        }
+    }
+
+    pub(crate) fn stream_call(
+        &self,
+        request: WireStreamCall,
+        stream_id: u64,
+        session: &str,
+        capability: &'static str,
+        operation: &str,
+    ) -> Result<StreamCall, RuntimeFailure> {
+        let request_id = match &request {
+            WireStreamCall::Send { request_id, .. }
+            | WireStreamCall::Receive { request_id, .. }
+            | WireStreamCall::CloseSend { request_id, .. } => *request_id,
+        };
+        match self {
+            Self::Framed(transport) => transport.stream_request(
+                FramedMessage::StreamCall(request),
+                request_id,
+                stream_id,
+                session.to_owned(),
+                capability,
+                operation,
+            ),
+            Self::JsonRpc(transport) => {
+                let (method, operation_name) = match &request {
+                    WireStreamCall::Send { .. } => ("lenso.stream.send", "send"),
+                    WireStreamCall::Receive { .. } => ("lenso.stream.receive", "receive"),
+                    WireStreamCall::CloseSend { .. } => ("lenso.stream.close_send", "close_send"),
+                };
+                transport.stream_request(
+                    request_id,
+                    stream_id,
+                    session.to_owned(),
+                    method,
+                    serde_json::to_value(request).map_err(|_| protocol_violation(None))?,
+                    operation_name,
+                )
+            }
+        }
+    }
+
     pub(crate) fn cancel(&self, request_id: u64) {
         match self {
             Self::Framed(transport) => transport.cancel(request_id),
             Self::JsonRpc(transport) => transport.cancel(request_id),
+        }
+    }
+
+    pub(crate) fn cancel_stream(&self, stream_id: u64, session: &str) {
+        match self {
+            Self::Framed(transport) => transport.cancel_stream(stream_id, session),
+            Self::JsonRpc(transport) => transport.cancel_stream(stream_id, session),
+        }
+    }
+
+    pub(crate) fn cancel_stream_call(&self, request_id: u64, stream_id: u64, session: &str) {
+        match self {
+            Self::Framed(transport) => transport.cancel_stream_call(request_id, stream_id, session),
+            Self::JsonRpc(transport) => {
+                transport.cancel_stream_call(request_id, stream_id, session)
+            }
         }
     }
 
@@ -321,6 +421,68 @@ pub(crate) struct WireCall {
     request_id: u64,
     transport: TransportClient,
     receiver: Option<oneshot::Receiver<WireResult>>,
+}
+
+/// A local stream future whose Drop implementation cancels the stream call.
+#[derive(Debug)]
+pub(crate) struct StreamCall {
+    request_id: u64,
+    stream_id: u64,
+    session: String,
+    transport: TransportClient,
+    receiver: Option<oneshot::Receiver<StreamWireResult>>,
+}
+
+impl StreamCall {
+    fn new(
+        request_id: u64,
+        stream_id: u64,
+        session: String,
+        transport: TransportClient,
+        receiver: oneshot::Receiver<StreamWireResult>,
+    ) -> Self {
+        Self {
+            request_id,
+            stream_id,
+            session,
+            transport,
+            receiver: Some(receiver),
+        }
+    }
+}
+
+impl Future for StreamCall {
+    type Output = StreamWireResult;
+
+    fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.get_mut();
+        let receiver = this
+            .receiver
+            .as_mut()
+            .expect("a stream call receiver is present until completion");
+        match Pin::new(receiver).poll(context) {
+            Poll::Ready(Ok(result)) => {
+                this.receiver.take();
+                Poll::Ready(result)
+            }
+            Poll::Ready(Err(_)) => {
+                this.receiver.take();
+                Poll::Ready(Err(RuntimeFailure::ModuleFailure {
+                    detail: "Bun stream response channel closed".to_owned(),
+                }))
+            }
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+impl Drop for StreamCall {
+    fn drop(&mut self) {
+        if self.receiver.take().is_some() {
+            self.transport
+                .cancel_stream_call(self.request_id, self.stream_id, &self.session);
+        }
+    }
 }
 
 impl WireCall {
@@ -376,10 +538,15 @@ pub(crate) struct FramedTransport {
     sender: SyncSender<Vec<u8>>,
     control_sender: SyncSender<Vec<u8>>,
     pending: PendingResponses,
+    stream_pending: PendingStreamResponses,
     cancelled: Arc<Mutex<BTreeSet<u64>>>,
+    stream_cancelled: Arc<Mutex<BTreeSet<u64>>>,
     retired: Arc<Mutex<BTreeSet<u64>>>,
+    stream_retired: Arc<Mutex<BTreeSet<u64>>>,
     max_frame_bytes: usize,
     admission_capacity: usize,
+    stream_admission_capacity: usize,
+    session: String,
     capability: &'static str,
     capability_ids: CapabilityIds,
 }
@@ -432,6 +599,7 @@ pub(crate) fn open_framed(
         });
     let capability = capability_id(&capability_ids, capability_name);
     verify_handshake(expected, &actual, capability)?;
+    let session = actual.session.unwrap_or_default();
     let queue_capacity = queue_capacity.max(1);
     let (sender, receiver) = mpsc::sync_channel(queue_capacity);
     let (control_sender, control_receiver) = mpsc::sync_channel(queue_capacity.saturating_add(1));
@@ -440,10 +608,15 @@ pub(crate) fn open_framed(
         sender,
         control_sender,
         pending: Arc::new(Mutex::new(BTreeMap::new())),
+        stream_pending: Arc::new(Mutex::new(BTreeMap::new())),
         cancelled: Arc::new(Mutex::new(BTreeSet::new())),
+        stream_cancelled: Arc::new(Mutex::new(BTreeSet::new())),
         retired: Arc::new(Mutex::new(BTreeSet::new())),
+        stream_retired: Arc::new(Mutex::new(BTreeSet::new())),
         max_frame_bytes: expected.max_frame_bytes,
         admission_capacity: queue_capacity,
+        stream_admission_capacity: queue_capacity.max(2),
+        session,
         capability,
         capability_ids,
     });
@@ -490,8 +663,11 @@ fn spawn_framed_writer(
 fn spawn_framed_reader(transport: &Arc<FramedTransport>, mut stdout: ChildStdout) {
     let process = transport.process.clone();
     let pending = transport.pending.clone();
+    let stream_pending = transport.stream_pending.clone();
     let cancelled = transport.cancelled.clone();
+    let stream_cancelled = transport.stream_cancelled.clone();
     let retired = transport.retired.clone();
+    let stream_retired = transport.stream_retired.clone();
     let max_frame_bytes = transport.max_frame_bytes;
     let capability = transport.capability;
     thread::Builder::new()
@@ -521,6 +697,28 @@ fn spawn_framed_reader(transport: &Arc<FramedTransport>, mut stdout: ChildStdout
                         };
                         remember_request_id(&retired, request_id);
                         let _ = sender.send(Ok(outcome));
+                    }
+                    Ok(FramedMessage::StreamResponse {
+                        request_id,
+                        response,
+                    }) => {
+                        let sender = stream_pending
+                            .lock()
+                            .ok()
+                            .and_then(|mut pending| pending.remove(&request_id));
+                        let Some(sender) = sender else {
+                            let late_cancel = stream_cancelled
+                                .lock()
+                                .is_ok_and(|mut cancelled| cancelled.remove(&request_id));
+                            if late_cancel {
+                                remember_request_id(&stream_retired, request_id);
+                                continue;
+                            }
+                            process.mark_dead(protocol_violation(Some(capability)));
+                            break;
+                        };
+                        remember_request_id(&stream_retired, request_id);
+                        let _ = sender.send(Ok(response));
                     }
                     Ok(_) => {
                         process.mark_dead(protocol_violation(Some(capability)));
@@ -619,6 +817,93 @@ impl FramedTransport {
         }
     }
 
+    fn stream_request(
+        self: &Arc<Self>,
+        message: FramedMessage,
+        request_id: u64,
+        stream_id: u64,
+        session: String,
+        capability_name: &str,
+        operation: &str,
+    ) -> Result<StreamCall, RuntimeFailure> {
+        if !self.process.is_alive() {
+            return Err(self
+                .process
+                .failure()
+                .unwrap_or(RuntimeFailure::Unavailable {
+                    capability: self.capability,
+                }));
+        }
+        let capability = capability_id(&self.capability_ids, capability_name);
+        let frame = encode_frame(&message, self.max_frame_bytes)?;
+        let (sender, receiver) = oneshot::channel();
+        let mut pending = self
+            .stream_pending
+            .lock()
+            .map_err(|_| RuntimeFailure::Internal {
+                detail: "Bun pending stream response lock poisoned".to_owned(),
+            })?;
+        if pending.contains_key(&request_id)
+            || self
+                .stream_cancelled
+                .lock()
+                .map_err(|_| RuntimeFailure::Internal {
+                    detail: "Bun cancelled stream request lock poisoned".to_owned(),
+                })?
+                .contains(&request_id)
+            || self
+                .stream_retired
+                .lock()
+                .map_err(|_| RuntimeFailure::Internal {
+                    detail: "Bun retired stream request lock poisoned".to_owned(),
+                })?
+                .contains(&request_id)
+        {
+            return Err(protocol_violation(Some(capability)));
+        }
+        if pending.len() >= self.stream_admission_capacity {
+            return Err(RuntimeFailure::ResourceExhausted {
+                capability,
+                operation: operation.to_owned(),
+            });
+        }
+        pending.insert(request_id, sender);
+        drop(pending);
+        match self.sender.try_send(frame) {
+            Ok(()) => Ok(StreamCall::new(
+                request_id,
+                stream_id,
+                session,
+                TransportClient::Framed(self.clone()),
+                receiver,
+            )),
+            Err(TrySendError::Full(_)) => {
+                self.stream_pending
+                    .lock()
+                    .ok()
+                    .and_then(|mut pending| pending.remove(&request_id));
+                Err(RuntimeFailure::ResourceExhausted {
+                    capability,
+                    operation: operation.to_owned(),
+                })
+            }
+            Err(TrySendError::Disconnected(_)) => {
+                self.stream_pending
+                    .lock()
+                    .ok()
+                    .and_then(|mut pending| pending.remove(&request_id));
+                let error =
+                    self.process
+                        .failure_or_exit()
+                        .unwrap_or(RuntimeFailure::ModuleFailure {
+                            detail: "Bun framed-stdio writer stopped".to_owned(),
+                        });
+                self.process.mark_dead(error.clone());
+                Err(error)
+            }
+        }
+    }
+
     fn cancel(&self, request_id: u64) {
         let removed = self
             .pending
@@ -647,6 +932,46 @@ impl FramedTransport {
         }
     }
 
+    fn cancel_stream_call(&self, request_id: u64, stream_id: u64, session: &str) {
+        let removed = self
+            .stream_pending
+            .lock()
+            .ok()
+            .and_then(|mut pending| pending.remove(&request_id));
+        if removed.is_none() {
+            return;
+        }
+        if let Ok(mut cancelled) = self.stream_cancelled.lock() {
+            while cancelled.len() >= MAX_CANCELLED_REQUEST_IDS {
+                let Some(oldest) = cancelled.iter().next().copied() else {
+                    break;
+                };
+                cancelled.remove(&oldest);
+            }
+            cancelled.insert(request_id);
+        }
+        remember_request_id(&self.stream_retired, request_id);
+        self.cancel_stream(stream_id, session);
+    }
+
+    fn cancel_stream(&self, stream_id: u64, session: &str) {
+        if !self.process.is_alive() {
+            return;
+        }
+        if let Ok(frame) = encode_frame(
+            &FramedMessage::StreamCancel {
+                stream_id,
+                session: session.to_owned(),
+            },
+            self.max_frame_bytes,
+        ) && self.control_sender.try_send(frame).is_err()
+        {
+            self.process.mark_dead(RuntimeFailure::ModuleFailure {
+                detail: "Bun framed-stdio stream cancellation channel stopped".to_owned(),
+            });
+        }
+    }
+
     fn fail_all(&self, error: &RuntimeFailure) {
         if let Ok(mut pending) = self.pending.lock() {
             let pending = std::mem::take(&mut *pending);
@@ -655,6 +980,15 @@ impl FramedTransport {
             }
         }
         if let Ok(mut cancelled) = self.cancelled.lock() {
+            cancelled.clear();
+        }
+        if let Ok(mut pending) = self.stream_pending.lock() {
+            let pending = std::mem::take(&mut *pending);
+            for (_, sender) in pending {
+                let _ = sender.send(Err(error.clone()));
+            }
+        }
+        if let Ok(mut cancelled) = self.stream_cancelled.lock() {
             cancelled.clear();
         }
     }
@@ -680,11 +1014,19 @@ pub(crate) struct JsonRpcTransport {
     process: Arc<ProcessState>,
     sender: SyncSender<HttpCall>,
     cancel_sender: SyncSender<u64>,
+    stream_sender: SyncSender<HttpStreamCall>,
+    stream_cancel_sender: SyncSender<StreamCancelCall>,
     pending: PendingResponses,
+    stream_pending: PendingStreamResponses,
     cancellations: Arc<Mutex<BTreeMap<u64, Arc<AtomicBool>>>>,
+    stream_cancellations: Arc<Mutex<BTreeMap<u64, Arc<AtomicBool>>>>,
     retired: Arc<Mutex<BTreeSet<u64>>>,
+    stream_retired: Arc<Mutex<BTreeSet<u64>>>,
     client: Arc<HttpClient>,
+    address: SocketAddr,
     max_frame_bytes: usize,
+    admission_capacity: usize,
+    stream_admission_capacity: usize,
     session: String,
     capability: &'static str,
     capability_ids: CapabilityIds,
@@ -694,6 +1036,20 @@ pub(crate) struct JsonRpcTransport {
 struct HttpCall {
     request: WireRequest,
     cancelled: Arc<AtomicBool>,
+}
+
+#[derive(Debug)]
+struct HttpStreamCall {
+    request_id: u64,
+    method: &'static str,
+    params: Value,
+    cancelled: Arc<AtomicBool>,
+}
+
+#[derive(Debug)]
+struct StreamCancelCall {
+    stream_id: u64,
+    session: String,
 }
 
 pub(crate) fn open_json_rpc(
@@ -722,17 +1078,29 @@ pub(crate) fn open_json_rpc(
         .ok_or_else(|| protocol_violation(Some(capability)))?;
 
     let queue_capacity = queue_capacity.max(1);
+    let stream_capacity = queue_capacity.max(2);
     let (sender, receiver) = mpsc::sync_channel(queue_capacity);
     let (cancel_sender, cancel_receiver) = mpsc::sync_channel(queue_capacity.saturating_add(1));
+    let (stream_sender, stream_receiver) = mpsc::sync_channel(stream_capacity);
+    let (stream_cancel_sender, stream_cancel_receiver) =
+        mpsc::sync_channel(queue_capacity.saturating_add(1));
     let transport = Arc::new(JsonRpcTransport {
         process: process.clone(),
         sender,
         cancel_sender,
+        stream_sender,
+        stream_cancel_sender,
         pending: Arc::new(Mutex::new(BTreeMap::new())),
+        stream_pending: Arc::new(Mutex::new(BTreeMap::new())),
         cancellations: Arc::new(Mutex::new(BTreeMap::new())),
+        stream_cancellations: Arc::new(Mutex::new(BTreeMap::new())),
         retired: Arc::new(Mutex::new(BTreeSet::new())),
+        stream_retired: Arc::new(Mutex::new(BTreeSet::new())),
         client: Arc::new(client),
+        address,
         max_frame_bytes: expected.max_frame_bytes,
+        admission_capacity: queue_capacity,
+        stream_admission_capacity: stream_capacity,
         session,
         capability,
         capability_ids,
@@ -749,6 +1117,12 @@ pub(crate) fn open_json_rpc(
         transport.client.clone(),
         transport.session.clone(),
         cancel_receiver,
+    );
+    spawn_json_rpc_stream_worker(Arc::downgrade(&transport), stream_receiver, stream_capacity);
+    spawn_json_rpc_stream_cancel_worker(
+        process.clone(),
+        transport.client.clone(),
+        stream_cancel_receiver,
     );
     Ok(TransportClient::JsonRpc(transport))
 }
@@ -837,7 +1211,241 @@ fn spawn_json_rpc_cancel_worker(
         .expect("Bun JSON-RPC cancellation worker should start");
 }
 
+fn spawn_json_rpc_stream_worker(
+    transport: Weak<JsonRpcTransport>,
+    receiver: Receiver<HttpStreamCall>,
+    worker_count: usize,
+) {
+    let receiver = Arc::new(Mutex::new(receiver));
+    for worker_index in 0..worker_count.max(2) {
+        let transport = transport.clone();
+        let receiver = receiver.clone();
+        thread::Builder::new()
+            .name(format!("lenso-bun-json-rpc-stream-worker-{worker_index}"))
+            .spawn(move || {
+                let runtime = match json_rpc_runtime() {
+                    Ok(runtime) => runtime,
+                    Err(error) => {
+                        if let Some(transport) = transport.upgrade() {
+                            transport.process.mark_dead(error);
+                        }
+                        return;
+                    }
+                };
+                let client = match transport.upgrade() {
+                    Some(transport) => match build_json_rpc_client(
+                        transport.address,
+                        transport.max_frame_bytes,
+                        transport.stream_admission_capacity,
+                    ) {
+                        Ok(client) => client,
+                        Err(error) => {
+                            transport.process.mark_dead(error);
+                            return;
+                        }
+                    },
+                    None => return,
+                };
+                loop {
+                    let call = match receiver.lock() {
+                        Ok(receiver) => receiver.recv(),
+                        Err(_) => return,
+                    };
+                    let Ok(call) = call else { break };
+                    let Some(transport) = transport.upgrade() else {
+                        break;
+                    };
+                    let request_id = call.request_id;
+                    if call.cancelled.load(Ordering::Acquire) {
+                        transport.finish_stream(
+                            request_id,
+                            Err(RuntimeFailure::Cancelled { request_id }),
+                        );
+                        continue;
+                    }
+                    let method = call.method;
+                    let result = runtime
+                        .block_on(
+                            client
+                                .request::<WireStreamOutcome, _>(method, rpc_params![call.params]),
+                        )
+                        .map_err(|error| json_rpc_failure(method, &error, transport.capability))
+                        .and_then(|outcome| {
+                            if call.cancelled.load(Ordering::Acquire) {
+                                Err(RuntimeFailure::Cancelled { request_id })
+                            } else {
+                                Ok(outcome)
+                            }
+                        });
+                    if let Err(error) = &result
+                        && !matches!(error, RuntimeFailure::Cancelled { .. })
+                    {
+                        let failure = transport
+                            .process
+                            .failure_or_exit()
+                            .unwrap_or_else(|| error.clone());
+                        transport.process.mark_dead(failure);
+                    }
+                    transport.finish_stream(request_id, result);
+                }
+            })
+            .expect("Bun JSON-RPC stream worker thread should start");
+    }
+}
+
+fn spawn_json_rpc_stream_cancel_worker(
+    process: Arc<ProcessState>,
+    client: Arc<HttpClient>,
+    receiver: Receiver<StreamCancelCall>,
+) {
+    thread::Builder::new()
+        .name("lenso-bun-json-rpc-stream-cancel-worker".to_owned())
+        .spawn(move || {
+            let Ok(runtime) = json_rpc_runtime() else {
+                return;
+            };
+            while let Ok(cancel) = receiver.recv() {
+                if !process.is_alive() {
+                    continue;
+                }
+                let _ = runtime.block_on(client.request::<bool, _>(
+                    "lenso.stream.cancel",
+                    rpc_params![serde_json::json!({
+                        "stream_id": cancel.stream_id,
+                        "session": cancel.session,
+                    })],
+                ));
+            }
+        })
+        .expect("Bun JSON-RPC stream cancellation worker thread should start");
+}
+
 impl JsonRpcTransport {
+    fn stream_request(
+        self: &Arc<Self>,
+        request_id: u64,
+        stream_id: u64,
+        session: String,
+        method: &'static str,
+        params: Value,
+        operation: &str,
+    ) -> Result<StreamCall, RuntimeFailure> {
+        if !self.process.is_alive() {
+            return Err(self
+                .process
+                .failure()
+                .unwrap_or(RuntimeFailure::Unavailable {
+                    capability: self.capability,
+                }));
+        }
+        let encoded_request = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "method": method,
+            "params": [&params],
+        });
+        let encoded_size = serde_json::to_vec(&encoded_request)
+            .map_err(|_| protocol_violation(Some(self.capability)))?
+            .len();
+        if encoded_size > self.max_frame_bytes {
+            return Err(protocol_violation(Some(self.capability)));
+        }
+        if self
+            .stream_retired
+            .lock()
+            .map_err(|_| RuntimeFailure::Internal {
+                detail: "Bun JSON-RPC retired stream request lock poisoned".to_owned(),
+            })?
+            .contains(&request_id)
+        {
+            return Err(protocol_violation(Some(self.capability)));
+        }
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let (sender, receiver) = oneshot::channel();
+        let mut cancellations =
+            self.stream_cancellations
+                .lock()
+                .map_err(|_| RuntimeFailure::Internal {
+                    detail: "Bun JSON-RPC stream cancellation lock poisoned".to_owned(),
+                })?;
+        if cancellations.contains_key(&request_id) {
+            return Err(protocol_violation(Some(self.capability)));
+        }
+        cancellations.insert(request_id, cancelled.clone());
+        drop(cancellations);
+        let mut pending = self
+            .stream_pending
+            .lock()
+            .map_err(|_| RuntimeFailure::Internal {
+                detail: "Bun JSON-RPC pending stream response lock poisoned".to_owned(),
+            })?;
+        if pending.contains_key(&request_id) {
+            self.stream_cancellations
+                .lock()
+                .ok()
+                .and_then(|mut cancellations| cancellations.remove(&request_id));
+            return Err(protocol_violation(Some(self.capability)));
+        }
+        if pending.len() >= self.stream_admission_capacity {
+            self.stream_cancellations
+                .lock()
+                .ok()
+                .and_then(|mut cancellations| cancellations.remove(&request_id));
+            return Err(RuntimeFailure::ResourceExhausted {
+                capability: self.capability,
+                operation: operation.to_owned(),
+            });
+        }
+        pending.insert(request_id, sender);
+        drop(pending);
+        match self.stream_sender.try_send(HttpStreamCall {
+            request_id,
+            method,
+            params,
+            cancelled,
+        }) {
+            Ok(()) => Ok(StreamCall::new(
+                request_id,
+                stream_id,
+                session,
+                TransportClient::JsonRpc(self.clone()),
+                receiver,
+            )),
+            Err(TrySendError::Full(_)) => {
+                self.stream_cancellations
+                    .lock()
+                    .ok()
+                    .and_then(|mut cancellations| cancellations.remove(&request_id));
+                self.stream_pending
+                    .lock()
+                    .ok()
+                    .and_then(|mut pending| pending.remove(&request_id));
+                Err(RuntimeFailure::ResourceExhausted {
+                    capability: self.capability,
+                    operation: operation.to_owned(),
+                })
+            }
+            Err(TrySendError::Disconnected(_)) => {
+                self.stream_cancellations
+                    .lock()
+                    .ok()
+                    .and_then(|mut cancellations| cancellations.remove(&request_id));
+                self.stream_pending
+                    .lock()
+                    .ok()
+                    .and_then(|mut pending| pending.remove(&request_id));
+                let error =
+                    self.process
+                        .failure_or_exit()
+                        .unwrap_or(RuntimeFailure::ModuleFailure {
+                            detail: "Bun JSON-RPC stream worker stopped".to_owned(),
+                        });
+                self.process.mark_dead(error.clone());
+                Err(error)
+            }
+        }
+    }
+
     fn request(self: &Arc<Self>, request: WireRequest) -> Result<WireCall, RuntimeFailure> {
         if !self.process.is_alive() {
             return Err(self
@@ -896,6 +1504,16 @@ impl JsonRpcTransport {
                 .ok()
                 .and_then(|mut cancellations| cancellations.remove(&request_id));
             return Err(protocol_violation(Some(self.capability)));
+        }
+        if pending.len() >= self.admission_capacity {
+            self.cancellations
+                .lock()
+                .ok()
+                .and_then(|mut cancellations| cancellations.remove(&request_id));
+            return Err(RuntimeFailure::ResourceExhausted {
+                capability: request_capability,
+                operation,
+            });
         }
         pending.insert(request_id, sender);
         drop(pending);
@@ -965,6 +1583,39 @@ impl JsonRpcTransport {
         }
     }
 
+    fn cancel_stream_call(&self, request_id: u64, stream_id: u64, session: &str) {
+        let cancelled = self
+            .stream_cancellations
+            .lock()
+            .ok()
+            .and_then(|mut cancellations| cancellations.remove(&request_id));
+        if let Some(cancelled) = cancelled {
+            cancelled.store(true, Ordering::Release);
+            self.stream_pending
+                .lock()
+                .ok()
+                .and_then(|mut pending| pending.remove(&request_id));
+            remember_request_id(&self.stream_retired, request_id);
+            self.cancel_stream(stream_id, session);
+        }
+    }
+
+    fn cancel_stream(&self, stream_id: u64, session: &str) {
+        if self.process.is_alive()
+            && self
+                .stream_cancel_sender
+                .try_send(StreamCancelCall {
+                    stream_id,
+                    session: session.to_owned(),
+                })
+                .is_err()
+        {
+            self.process.mark_dead(RuntimeFailure::ModuleFailure {
+                detail: "Bun JSON-RPC stream cancellation channel stopped".to_owned(),
+            });
+        }
+    }
+
     fn finish(&self, request_id: u64, result: WireResult) {
         self.cancellations
             .lock()
@@ -976,6 +1627,19 @@ impl JsonRpcTransport {
             .and_then(|mut pending| pending.remove(&request_id))
             .map(|sender| sender.send(result));
         remember_request_id(&self.retired, request_id);
+    }
+
+    fn finish_stream(&self, request_id: u64, result: StreamWireResult) {
+        self.stream_cancellations
+            .lock()
+            .ok()
+            .and_then(|mut cancellations| cancellations.remove(&request_id));
+        self.stream_pending
+            .lock()
+            .ok()
+            .and_then(|mut pending| pending.remove(&request_id))
+            .map(|sender| sender.send(result));
+        remember_request_id(&self.stream_retired, request_id);
     }
 
     fn fail_all(&self, error: &RuntimeFailure) {
@@ -991,6 +1655,18 @@ impl JsonRpcTransport {
                 let _ = sender.send(Err(error.clone()));
             }
         }
+        if let Ok(mut cancellations) = self.stream_cancellations.lock() {
+            for cancelled in cancellations.values() {
+                cancelled.store(true, Ordering::Release);
+            }
+            cancellations.clear();
+        }
+        if let Ok(mut pending) = self.stream_pending.lock() {
+            let pending = std::mem::take(&mut *pending);
+            for (_, sender) in pending {
+                let _ = sender.send(Err(error.clone()));
+            }
+        }
     }
 
     fn shutdown(&self) {
@@ -1001,6 +1677,408 @@ impl JsonRpcTransport {
 impl Drop for JsonRpcTransport {
     fn drop(&mut self) {
         self.process.stop();
+    }
+}
+
+#[derive(Debug)]
+struct TransportStreamState {
+    stream_id: u64,
+    session: String,
+    capability: &'static str,
+    operation: String,
+    send_credit: AtomicUsize,
+    next_send_sequence: AtomicU64,
+    next_receive_sequence: AtomicU64,
+    receive_in_flight: AtomicBool,
+    local_half_closed: AtomicBool,
+    peer_half_closed: AtomicBool,
+    terminal_seen: AtomicBool,
+    cancelled: AtomicBool,
+    credit_waiters: Mutex<Vec<oneshot::Sender<()>>>,
+}
+
+/// JSON-valued stream session shared by the Bun transport and its codec wrapper.
+#[derive(Debug)]
+pub(crate) struct TransportStreamSession {
+    transport: TransportClient,
+    state: Arc<TransportStreamState>,
+}
+
+impl TransportStreamSession {
+    pub(crate) fn new(
+        transport: TransportClient,
+        stream_id: u64,
+        session: String,
+        capability: &'static str,
+        operation: String,
+        credit: u32,
+    ) -> Self {
+        Self {
+            transport,
+            state: Arc::new(TransportStreamState {
+                stream_id,
+                session,
+                capability,
+                operation,
+                send_credit: AtomicUsize::new(credit as usize),
+                next_send_sequence: AtomicU64::new(0),
+                next_receive_sequence: AtomicU64::new(0),
+                receive_in_flight: AtomicBool::new(false),
+                local_half_closed: AtomicBool::new(false),
+                peer_half_closed: AtomicBool::new(false),
+                terminal_seen: AtomicBool::new(false),
+                cancelled: AtomicBool::new(false),
+                credit_waiters: Mutex::new(Vec::new()),
+            }),
+        }
+    }
+
+    fn protocol_violation(&self) -> RuntimeFailure {
+        RuntimeFailure::ProtocolViolation {
+            capability: self.state.capability,
+        }
+    }
+
+    fn next_call_id() -> u64 {
+        (1_u64 << 52) | NEXT_STREAM_CALL_ID.fetch_add(1, Ordering::Relaxed)
+    }
+
+    fn wake_credit_waiters(&self) {
+        let waiters = self
+            .state
+            .credit_waiters
+            .lock()
+            .map(|mut waiters| std::mem::take(&mut *waiters))
+            .unwrap_or_default();
+        for waiter in waiters {
+            let _ = waiter.send(());
+        }
+    }
+
+    fn restore_rejected_send(
+        transport: &TransportClient,
+        state: &Arc<TransportStreamState>,
+        sequence: u64,
+    ) -> Result<(), RuntimeFailure> {
+        if state
+            .next_send_sequence
+            .compare_exchange(
+                sequence.saturating_add(1),
+                sequence,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_err()
+        {
+            return Err(RuntimeFailure::ProtocolViolation {
+                capability: state.capability,
+            });
+        }
+        state.send_credit.fetch_add(1, Ordering::AcqRel);
+        Self {
+            transport: transport.clone(),
+            state: state.clone(),
+        }
+        .wake_credit_waiters();
+        Ok(())
+    }
+
+    fn register_credit_waiter(&self) -> Result<Option<oneshot::Receiver<()>>, RuntimeFailure> {
+        if self.state.cancelled.load(Ordering::Acquire)
+            || self.state.terminal_seen.load(Ordering::Acquire)
+        {
+            return Err(self.protocol_violation());
+        }
+        if self.state.send_credit.load(Ordering::Acquire) > 0 {
+            return Ok(None);
+        }
+        let (sender, receiver) = oneshot::channel();
+        let mut waiters =
+            self.state
+                .credit_waiters
+                .lock()
+                .map_err(|_| RuntimeFailure::Internal {
+                    detail: "Bun stream credit waiter lock poisoned".to_owned(),
+                })?;
+        if self.state.cancelled.load(Ordering::Acquire)
+            || self.state.terminal_seen.load(Ordering::Acquire)
+        {
+            return Err(self.protocol_violation());
+        }
+        if self.state.send_credit.load(Ordering::Acquire) > 0 {
+            return Ok(None);
+        }
+        if waiters.len() >= MAX_STREAM_CREDIT_WAITERS {
+            return Err(RuntimeFailure::ResourceExhausted {
+                capability: self.state.capability,
+                operation: self.state.operation.clone(),
+            });
+        }
+        waiters.push(sender);
+        Ok(Some(receiver))
+    }
+}
+
+impl NativeStreamSession for TransportStreamSession {
+    fn send(&self, message: Box<dyn Any>) -> LocalBoxFuture<'static, Result<(), RuntimeFailure>> {
+        if self.state.local_half_closed.load(Ordering::Acquire)
+            || self.state.terminal_seen.load(Ordering::Acquire)
+            || self.state.cancelled.load(Ordering::Acquire)
+        {
+            return Box::pin(futures::future::ready(Err(self.protocol_violation())));
+        }
+        let payload = match message.downcast::<Value>() {
+            Ok(payload) => *payload,
+            Err(_) => {
+                return Box::pin(futures::future::ready(Err(self.protocol_violation())));
+            }
+        };
+        let mut credit = self.state.send_credit.load(Ordering::Acquire);
+        loop {
+            if credit == 0 {
+                match self.register_credit_waiter() {
+                    Ok(Some(waiter)) => {
+                        let session = Self {
+                            transport: self.transport.clone(),
+                            state: self.state.clone(),
+                        };
+                        return Box::pin(async move {
+                            match waiter.await {
+                                Ok(()) => session.send(Box::new(payload)).await,
+                                Err(_) => Err(session.protocol_violation()),
+                            }
+                        });
+                    }
+                    Ok(None) => {
+                        credit = self.state.send_credit.load(Ordering::Acquire);
+                        continue;
+                    }
+                    Err(error) => {
+                        return Box::pin(futures::future::ready(Err(error)));
+                    }
+                }
+            }
+            match self.state.send_credit.compare_exchange_weak(
+                credit,
+                credit - 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => break,
+                Err(current) => credit = current,
+            }
+        }
+        let sequence = self.state.next_send_sequence.fetch_add(1, Ordering::AcqRel);
+        let request_id = Self::next_call_id();
+        let state = self.state.clone();
+        let transport = self.transport.clone();
+        let call = match transport.stream_call(
+            WireStreamCall::Send {
+                request_id,
+                stream_id: state.stream_id,
+                session: state.session.clone(),
+                sequence,
+                payload,
+            },
+            state.stream_id,
+            &state.session,
+            state.capability,
+            &state.operation,
+        ) {
+            Ok(call) => call,
+            Err(error) => {
+                if matches!(error, RuntimeFailure::ResourceExhausted { .. })
+                    && let Err(rollback_error) =
+                        Self::restore_rejected_send(&transport, &state, sequence)
+                {
+                    return Box::pin(futures::future::ready(Err(rollback_error)));
+                }
+                return Box::pin(futures::future::ready(Err(error)));
+            }
+        };
+        Box::pin(async move {
+            match call.await? {
+                WireStreamOutcome::Accepted { credit } => {
+                    state.send_credit.store(credit as usize, Ordering::Release);
+                    let session = Self {
+                        transport: transport.clone(),
+                        state: state.clone(),
+                    };
+                    session.wake_credit_waiters();
+                    Ok(())
+                }
+                WireStreamOutcome::Runtime { failure } => {
+                    if matches!(
+                        failure,
+                        crate::protocol::WireFailure::ResourceExhausted { .. }
+                    ) {
+                        Self::restore_rejected_send(&transport, &state, sequence)?;
+                    }
+                    Err(from_wire_failure(state.capability, failure))
+                }
+                _ => Err(RuntimeFailure::ProtocolViolation {
+                    capability: state.capability,
+                }),
+            }
+        })
+    }
+
+    fn receive(&self) -> LocalBoxFuture<'static, Result<NativeStreamItem, RuntimeFailure>> {
+        if self.state.terminal_seen.load(Ordering::Acquire)
+            || self.state.cancelled.load(Ordering::Acquire)
+        {
+            return Box::pin(futures::future::ready(Err(self.protocol_violation())));
+        }
+        if self
+            .state
+            .receive_in_flight
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return Box::pin(futures::future::ready(Err(
+                RuntimeFailure::ResourceExhausted {
+                    capability: self.state.capability,
+                    operation: format!("{}.receive", self.state.operation),
+                },
+            )));
+        }
+        let request_id = Self::next_call_id();
+        let state = self.state.clone();
+        let transport = self.transport.clone();
+        let call = match transport.stream_call(
+            WireStreamCall::Receive {
+                request_id,
+                stream_id: state.stream_id,
+                session: state.session.clone(),
+            },
+            state.stream_id,
+            &state.session,
+            state.capability,
+            &state.operation,
+        ) {
+            Ok(call) => call,
+            Err(error) => {
+                state.receive_in_flight.store(false, Ordering::Release);
+                return Box::pin(futures::future::ready(Err(error)));
+            }
+        };
+        Box::pin(async move {
+            let result = match call.await {
+                Ok(WireStreamOutcome::Event { event }) => match event {
+                    crate::protocol::WireStreamEvent::Message { sequence, payload } => {
+                        if state.peer_half_closed.load(Ordering::Acquire)
+                            || sequence != state.next_receive_sequence.load(Ordering::Acquire)
+                        {
+                            Err(RuntimeFailure::ProtocolViolation {
+                                capability: state.capability,
+                            })
+                        } else {
+                            state.next_receive_sequence.fetch_add(1, Ordering::AcqRel);
+                            Ok(NativeStreamItem::Message(Box::new(payload)))
+                        }
+                    }
+                    crate::protocol::WireStreamEvent::PeerHalfClosed => {
+                        if state.peer_half_closed.swap(true, Ordering::AcqRel) {
+                            Err(RuntimeFailure::ProtocolViolation {
+                                capability: state.capability,
+                            })
+                        } else {
+                            Ok(NativeStreamItem::PeerHalfClosed)
+                        }
+                    }
+                    crate::protocol::WireStreamEvent::Terminal { outcome } => {
+                        if state.terminal_seen.swap(true, Ordering::AcqRel) {
+                            Err(RuntimeFailure::ProtocolViolation {
+                                capability: state.capability,
+                            })
+                        } else {
+                            let item = match outcome {
+                                crate::protocol::WireStreamTerminal::Success => {
+                                    NativeStreamItem::Terminal(Ok(()))
+                                }
+                                crate::protocol::WireStreamTerminal::Domain { value } => {
+                                    NativeStreamItem::Terminal(Err(Box::new(value)))
+                                }
+                            };
+                            let session = Self {
+                                transport: transport.clone(),
+                                state: state.clone(),
+                            };
+                            session.wake_credit_waiters();
+                            Ok(item)
+                        }
+                    }
+                },
+                Ok(WireStreamOutcome::Runtime { failure }) => {
+                    Err(from_wire_failure(state.capability, failure))
+                }
+                Ok(_) => Err(RuntimeFailure::ProtocolViolation {
+                    capability: state.capability,
+                }),
+                Err(error) => Err(error),
+            };
+            state.receive_in_flight.store(false, Ordering::Release);
+            result
+        })
+    }
+
+    fn close_send(&self) -> LocalBoxFuture<'static, Result<(), RuntimeFailure>> {
+        if self.state.terminal_seen.load(Ordering::Acquire)
+            || self.state.cancelled.load(Ordering::Acquire)
+            || self.state.local_half_closed.swap(true, Ordering::AcqRel)
+        {
+            return Box::pin(futures::future::ready(Err(self.protocol_violation())));
+        }
+        let request_id = Self::next_call_id();
+        let state = self.state.clone();
+        let transport = self.transport.clone();
+        let call = match transport.stream_call(
+            WireStreamCall::CloseSend {
+                request_id,
+                stream_id: state.stream_id,
+                session: state.session.clone(),
+            },
+            state.stream_id,
+            &state.session,
+            state.capability,
+            &state.operation,
+        ) {
+            Ok(call) => call,
+            Err(error) => {
+                if matches!(error, RuntimeFailure::ResourceExhausted { .. }) {
+                    state.local_half_closed.store(false, Ordering::Release);
+                }
+                return Box::pin(futures::future::ready(Err(error)));
+            }
+        };
+        Box::pin(async move {
+            let result = match call.await {
+                Ok(WireStreamOutcome::Accepted { .. }) => Ok(()),
+                Ok(WireStreamOutcome::Runtime { failure }) => {
+                    Err(from_wire_failure(state.capability, failure))
+                }
+                Ok(_) => Err(RuntimeFailure::ProtocolViolation {
+                    capability: state.capability,
+                }),
+                Err(error) => Err(error),
+            };
+            let resource_exhausted = result
+                .as_ref()
+                .err()
+                .is_some_and(|error| matches!(error, RuntimeFailure::ResourceExhausted { .. }));
+            if resource_exhausted {
+                state.local_half_closed.store(false, Ordering::Release);
+            }
+            result
+        })
+    }
+
+    fn cancel(&self) {
+        if !self.state.cancelled.swap(true, Ordering::AcqRel) {
+            self.wake_credit_waiters();
+            self.transport
+                .cancel_stream(self.state.stream_id, &self.state.session);
+        }
     }
 }
 
@@ -1202,10 +2280,15 @@ mod tests {
             sender,
             control_sender,
             pending: Arc::new(Mutex::new(BTreeMap::new())),
+            stream_pending: Arc::new(Mutex::new(BTreeMap::new())),
             cancelled: Arc::new(Mutex::new(BTreeSet::new())),
+            stream_cancelled: Arc::new(Mutex::new(BTreeSet::new())),
             retired: Arc::new(Mutex::new(BTreeSet::new())),
+            stream_retired: Arc::new(Mutex::new(BTreeSet::new())),
             max_frame_bytes: 4096,
             admission_capacity: 1,
+            stream_admission_capacity: 2,
+            session: String::new(),
             capability: "example.greeting@1",
             capability_ids: Arc::new(BTreeMap::from([(
                 "example.greeting@1".to_owned(),
