@@ -20,6 +20,7 @@ lenso-capability-auth = { path = "../lenso-capability-auth" }
 lenso-capability-greeting = { path = "../lenso-capability-greeting" }
 lenso-capability-secure-greeting = { path = "../lenso-capability-secure-greeting" }
 lenso-native-adapter = { path = "../lenso-native-adapter" }
+lenso-otel-module = { path = "../lenso-otel-module" }
 time.workspace = true
 
 [lints]
