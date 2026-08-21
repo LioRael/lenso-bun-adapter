@@ -1,0 +1,163 @@
+{
+  "schema": "lenso.bun-wire-benchmark.v1",
+  "generated_at": "2026-08-20T21:21:50.486Z",
+  "runtime": {
+    "bun": "1.4.0",
+    "node": "v26.3.0",
+    "platform": "darwin",
+    "arch": "arm64"
+  },
+  "hardware": {
+    "uname": "Darwin laiaosideMacBook-Pro-7.local 27.0.0 Darwin Kernel Version 27.0.0: Tue Aug 11 22:06:20 PDT 2026; root:xnu-13432.1.9~3/RELEASE_ARM64_T6020 arm64",
+    "logical_cpu_count": 10
+  },
+  "corpus": "fixtures/bun/request-conformance.json",
+  "request_count": 50,
+  "candidates": {
+    "framed-stdio": {
+      "instance_count": 1,
+      "startup_ms": 7.312,
+      "request_count": 50,
+      "latency_ms": {
+        "p50": 0.057,
+        "p95": 0.329,
+        "p99": 0.629
+      },
+      "throughput_requests_per_second": 10957.696,
+      "memory_max_rss_bytes": 21708800,
+      "cancellation_ms": 6.36,
+      "corpus_results": {
+        "success": "success",
+        "known-domain-error": "domain",
+        "unknown-domain-error": "domain",
+        "unknown-operation": "runtime",
+        "runtime-unavailable": "runtime",
+        "runtime-ambiguous-binding": "runtime",
+        "runtime-missing-module-factory": "runtime",
+        "runtime-unavailable-execution-class": "runtime",
+        "runtime-invalid-resolved-plan": "runtime",
+        "runtime-admission-closed": "runtime",
+        "runtime-internal": "runtime",
+        "runtime-restart-exhausted": "runtime"
+      }
+    },
+    "json-rpc-http": {
+      "instance_count": 1,
+      "startup_ms": 8.601,
+      "request_count": 50,
+      "latency_ms": {
+        "p50": 0.092,
+        "p95": 0.438,
+        "p99": 0.9
+      },
+      "throughput_requests_per_second": 6768.231,
+      "memory_max_rss_bytes": 24313856,
+      "cancellation_ms": 30.965,
+      "corpus_results": {
+        "success": "success",
+        "known-domain-error": "domain",
+        "unknown-domain-error": "domain",
+        "unknown-operation": "runtime",
+        "runtime-unavailable": "runtime",
+        "runtime-ambiguous-binding": "runtime",
+        "runtime-missing-module-factory": "runtime",
+        "runtime-unavailable-execution-class": "runtime",
+        "runtime-invalid-resolved-plan": "runtime",
+        "runtime-admission-closed": "runtime",
+        "runtime-internal": "runtime",
+        "runtime-restart-exhausted": "runtime"
+      }
+    }
+  },
+  "crash": {
+    "framed-stdio": {
+      "detection_ms": 1.016,
+      "recovery_ms": 7.708,
+      "exit_code": 17,
+      "observed_failure": "module_failure"
+    },
+    "json-rpc-http": {
+      "detection_ms": 1.095,
+      "recovery_ms": 8.906,
+      "exit_code": 17,
+      "observed_failure": "module_failure"
+    }
+  },
+  "contract_cases": [
+    {
+      "name": "deadline-exceeded",
+      "scenario": "deadline",
+      "expected_outcome": "runtime",
+      "expected_failure": "deadline_exceeded",
+      "boundary_bytes": null,
+      "queue_capacity": null,
+      "observed_by_candidate": {
+        "framed-stdio": "deadline_exceeded",
+        "json-rpc-http": "deadline_exceeded"
+      }
+    },
+    {
+      "name": "cancelled",
+      "scenario": "cancellation",
+      "expected_outcome": "runtime",
+      "expected_failure": "cancelled",
+      "boundary_bytes": null,
+      "queue_capacity": null,
+      "observed_by_candidate": {
+        "framed-stdio": "cancelled",
+        "json-rpc-http": "cancelled"
+      }
+    },
+    {
+      "name": "oversized-frame",
+      "scenario": "size-boundary",
+      "expected_outcome": "runtime",
+      "expected_failure": "protocol_violation",
+      "boundary_bytes": 65537,
+      "queue_capacity": null,
+      "observed_by_candidate": {
+        "framed-stdio": "protocol_violation",
+        "json-rpc-http": "protocol_violation"
+      }
+    },
+    {
+      "name": "provider-crash",
+      "scenario": "process-failure",
+      "expected_outcome": "runtime",
+      "expected_failure": "module_failure",
+      "boundary_bytes": null,
+      "queue_capacity": null,
+      "observed_by_candidate": {
+        "framed-stdio": "module_failure",
+        "json-rpc-http": "module_failure"
+      }
+    },
+    {
+      "name": "bounded-overload",
+      "scenario": "overload",
+      "expected_outcome": "runtime",
+      "expected_failure": "resource_exhausted",
+      "boundary_bytes": null,
+      "queue_capacity": 32,
+      "observed_by_candidate": {
+        "framed-stdio": "resource_exhausted",
+        "json-rpc-http": "resource_exhausted"
+      }
+    }
+  ],
+  "bounded_overload": {
+    "provider_capacity": 32,
+    "candidates": {
+      "framed-stdio": {
+        "request_count": 40,
+        "rejected": 8,
+        "observed_failure": "resource_exhausted"
+      },
+      "json-rpc-http": {
+        "request_count": 40,
+        "rejected": 8,
+        "observed_failure": "resource_exhausted"
+      }
+    }
+  }
+}
