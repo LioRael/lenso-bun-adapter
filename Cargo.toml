@@ -15,7 +15,12 @@ serde_json.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
+lenso-auth-sdk = { path = "../lenso-auth-sdk" }
+lenso-capability-auth = { path = "../lenso-capability-auth" }
 lenso-capability-greeting = { path = "../lenso-capability-greeting" }
+lenso-capability-secure-greeting = { path = "../lenso-capability-secure-greeting" }
+lenso-native-adapter = { path = "../lenso-native-adapter" }
+time.workspace = true
 
 [lints]
 workspace = true

@@ -21,9 +21,9 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 use crate::protocol::{
-    EndpointDescriptor, Handshake, HandshakeAck, WireEventPublish, WireFailure, WireOutcome,
-    WireRequest, WireStreamCall, WireStreamEvent, WireStreamOpen, WireStreamOutcome,
-    WireStreamTerminal, handshake_for, to_wire_failure, verify_handshake,
+    BunInvocationExtension, EndpointDescriptor, Handshake, HandshakeAck, WireEventPublish,
+    WireFailure, WireOutcome, WireRequest, WireStreamCall, WireStreamEvent, WireStreamOpen,
+    WireStreamOutcome, WireStreamTerminal, handshake_for, to_wire_failure, verify_handshake,
 };
 
 const PROVIDER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
@@ -80,7 +80,9 @@ pub struct BunRequest {
     pub caller_instance: Option<String>,
     /// Generated portable JSON request value.
     pub payload: Value,
-    cancellation: Arc<AtomicBool>,
+    /// Opaque ordinary and sealed Invocation Context extensions.
+    pub extensions: Vec<BunInvocationExtension>,
+    pub(crate) cancellation: Arc<AtomicBool>,
 }
 
 impl BunRequest {
@@ -687,6 +689,9 @@ fn handle_request(request: WireRequest, state: &ProviderState) -> WireOutcome {
     if expected_session.as_deref() != request.session.as_deref() {
         return runtime_outcome(&protocol_failure(state));
     }
+    if let Err(error) = request.validate_extensions() {
+        return runtime_outcome(&error);
+    }
     let Some(endpoint) = state.expected.endpoints.first() else {
         return runtime_outcome(&protocol_failure(state));
     };
@@ -717,15 +722,9 @@ fn handle_request(request: WireRequest, state: &ProviderState) -> WireOutcome {
         Err(error) => return runtime_outcome(&error),
     };
     let response = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        state.handler.invoke(BunRequest {
-            request_id,
-            capability_id: request.capability_id,
-            operation: request.operation,
-            deadline_nanos: request.deadline_nanos,
-            caller_instance: request.caller_instance,
-            payload: request.payload,
-            cancellation,
-        })
+        state
+            .handler
+            .invoke(BunRequest::from_wire(request, cancellation))
     }))
     .unwrap_or_else(|_| {
         BunResponse::Runtime(RuntimeFailure::ModuleFailure {
@@ -743,6 +742,9 @@ fn handle_request(request: WireRequest, state: &ProviderState) -> WireOutcome {
 fn handle_event(event: WireEventPublish, state: &ProviderState) -> WireOutcome {
     if !valid_session(event.session.as_deref(), state) {
         return runtime_outcome(&protocol_failure(state));
+    }
+    if let Err(error) = event.validate_extensions() {
+        return runtime_outcome(&error);
     }
     let Some(endpoint) = state.expected.endpoints.first() else {
         return runtime_outcome(&protocol_failure(state));
@@ -773,15 +775,7 @@ fn handle_event(event: WireEventPublish, state: &ProviderState) -> WireOutcome {
     };
     let queued = QueuedEvent {
         request_id,
-        request: BunRequest {
-            request_id,
-            capability_id: event.capability_id,
-            operation: event.operation,
-            deadline_nanos: event.deadline_nanos,
-            caller_instance: event.caller_instance,
-            payload: event.payload,
-            cancellation,
-        },
+        request: BunRequest::from_wire(event, cancellation),
     };
     let should_start = match event_queue.try_enqueue(queued) {
         Ok(Some(should_start)) => should_start,
@@ -844,6 +838,9 @@ fn handle_stream_open(open: WireStreamOpen, state: &ProviderState) -> WireStream
     if !valid_session(open.session.as_deref(), state) {
         return stream_runtime_outcome(&protocol_failure(state));
     }
+    if let Err(error) = open.validate_extensions() {
+        return stream_runtime_outcome(&error);
+    }
     let Some(endpoint) = state.expected.endpoints.first() else {
         return stream_runtime_outcome(&protocol_failure(state));
     };
@@ -883,6 +880,8 @@ fn handle_stream_open(open: WireStreamOpen, state: &ProviderState) -> WireStream
         };
     };
     let request_id = open.request_id;
+    let (stream_id, requested_credit) = (open.stream_id, open.credit);
+    let operation = open.operation.clone();
     let cancellation = match register_request(
         &state.cancellations,
         &state.retired,
@@ -893,15 +892,9 @@ fn handle_stream_open(open: WireStreamOpen, state: &ProviderState) -> WireStream
         Err(error) => return stream_runtime_outcome(&error),
     };
     let response = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        state.handler.open_stream(BunRequest {
-            request_id,
-            capability_id: open.capability_id,
-            operation: open.operation.clone(),
-            deadline_nanos: open.deadline_nanos,
-            caller_instance: open.caller_instance,
-            payload: open.payload,
-            cancellation,
-        })
+        state
+            .handler
+            .open_stream(BunRequest::from_wire(open, cancellation))
     }))
     .unwrap_or_else(|_| {
         BunStreamOpenResponse::Runtime(RuntimeFailure::ModuleFailure {
@@ -911,12 +904,12 @@ fn handle_stream_open(open: WireStreamOpen, state: &ProviderState) -> WireStream
     remove_request(&state.cancellations, &state.retired, request_id);
     match response {
         BunStreamOpenResponse::Success(stream) => {
-            let credit = usize::try_from(open.credit)
+            let credit = usize::try_from(requested_credit)
                 .unwrap_or(usize::MAX)
                 .min(crate::protocol::DEFAULT_STREAM_CREDIT as usize);
             let entry = Arc::new(ProviderStreamEntry {
                 stream,
-                operation: open.operation,
+                operation,
                 permit: Mutex::new(Some(permit)),
                 inbound_credit: AtomicUsize::new(credit),
                 next_inbound_sequence: AtomicU64::new(0),
@@ -934,9 +927,9 @@ fn handle_stream_open(open: WireStreamOpen, state: &ProviderState) -> WireStream
                     detail: "Bun provider stream lock poisoned".to_owned(),
                 });
             };
-            streams.insert(open.stream_id, entry);
+            streams.insert(stream_id, entry);
             WireStreamOutcome::Opened {
-                stream_id: open.stream_id,
+                stream_id,
                 credit: u32::try_from(credit).unwrap_or(u32::MAX),
             }
         }
@@ -1348,6 +1341,9 @@ mod tests {
     use super::*;
     use crate::protocol::DEFAULT_STREAM_CREDIT;
 
+    #[path = "server_extension_tests.rs"]
+    mod extension_tests;
+
     #[derive(Debug)]
     struct TestHandler;
 
@@ -1532,6 +1528,7 @@ mod tests {
                     deadline_nanos: None,
                     caller_instance: Some("unbound-consumer".to_owned()),
                     session: accepted.session,
+                    extensions: Vec::new(),
                     payload: serde_json::json!({ "message": "not bound" }),
                 }],
             ))
@@ -1576,6 +1573,7 @@ mod tests {
                     deadline_nanos: None,
                     caller_instance: None,
                     session: Some(session.clone()),
+                    extensions: Vec::new(),
                     credit: DEFAULT_STREAM_CREDIT,
                     payload: serde_json::json!({ "room": "test" }),
                 }],
@@ -1667,6 +1665,7 @@ mod tests {
                     deadline_nanos: None,
                     caller_instance: None,
                     session: Some(session),
+                    extensions: Vec::new(),
                     payload: serde_json::json!({ "name": "Ada" }),
                 }],
             ))

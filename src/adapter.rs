@@ -20,9 +20,8 @@ use serde_json::Value;
 
 use crate::{
     protocol::{
-        DEFAULT_STREAM_CREDIT, EndpointDescriptor, EventBindingDescriptor, WireEventPublish,
-        WireOutcome, WireRequest, WireStreamOpen, WireStreamOutcome, from_wire_failure,
-        handshake_for,
+        EndpointDescriptor, EventBindingDescriptor, WireOutcome, WireStreamOutcome,
+        from_wire_failure, handshake_for, wire_event, wire_request, wire_stream_open,
     },
     transport::{
         ProcessState, TransportClient, TransportStreamSession, open_transport, spawn_process,
@@ -674,15 +673,12 @@ impl NativeRequestEndpoint for BunRequestEndpoint {
             Err(error) => return Box::pin(futures::future::ready(Err(error))),
         };
         let operation = operation.to_owned();
-        let wire_request = WireRequest {
-            request_id: context.request_id(),
-            capability_id: self.capability.clone(),
-            operation: operation.clone(),
-            deadline_nanos: crate::protocol::deadline_nanos(context.deadline()),
-            caller_instance: context.caller_instance().map(ToOwned::to_owned),
-            session: None,
+        let wire_request = wire_request(
+            &context,
+            self.capability.clone(),
+            operation.clone(),
             payload,
-        };
+        );
         let call = match self.transport.request(wire_request) {
             Ok(call) => call,
             Err(error) => return Box::pin(futures::future::ready(Err(error))),
@@ -759,15 +755,12 @@ impl NativeEventEndpoint for BunEventEndpoint {
                 },
             )));
         };
-        let wire_event = WireEventPublish {
-            request_id: context.request_id(),
-            capability_id: self.capability.clone(),
-            operation: operation.to_owned(),
-            deadline_nanos: crate::protocol::deadline_nanos(context.deadline()),
-            caller_instance: context.caller_instance().map(ToOwned::to_owned),
-            session: None,
+        let wire_event = wire_event(
+            &context,
+            self.capability.clone(),
+            operation.to_owned(),
             payload,
-        };
+        );
         let capability = self.codec.capability_id();
         let transport = self.transport.clone();
         Box::pin(async move {
@@ -887,17 +880,12 @@ impl NativeStreamEndpoint for BunStreamEndpoint {
             Err(error) => return Box::pin(futures::future::ready(Err(error))),
         };
         let operation = operation.to_owned();
-        let wire_request = WireStreamOpen {
-            request_id: context.request_id(),
-            stream_id: context.request_id(),
-            capability_id: self.capability.clone(),
-            operation: operation.clone(),
-            deadline_nanos: crate::protocol::deadline_nanos(context.deadline()),
-            caller_instance: context.caller_instance().map(ToOwned::to_owned),
-            session: None,
-            credit: DEFAULT_STREAM_CREDIT,
+        let wire_request = wire_stream_open(
+            &context,
+            self.capability.clone(),
+            operation.clone(),
             payload,
-        };
+        );
         let call = match self.transport.open_stream(wire_request) {
             Ok(call) => call,
             Err(error) => return Box::pin(futures::future::ready(Err(error))),
