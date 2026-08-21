@@ -74,10 +74,19 @@ pub(crate) fn open_json_rpc(
         });
     let capability = capability_id(&capability_ids, capability_name);
     let client = build_json_rpc_client(address, expected.max_frame_bytes, queue_capacity)?;
-    let runtime = json_rpc_runtime()?;
-    let actual: HandshakeAck = runtime
-        .block_on(client.request("lenso.handshake", rpc_params![expected.clone()]))
-        .map_err(|error| json_rpc_failure("handshake", &error, capability))?;
+    let actual: HandshakeAck = thread::scope(|scope| {
+        scope
+            .spawn(|| {
+                let runtime = json_rpc_runtime()?;
+                runtime
+                    .block_on(client.request("lenso.handshake", rpc_params![expected.clone()]))
+                    .map_err(|error| json_rpc_failure("handshake", &error, capability))
+            })
+            .join()
+    })
+    .map_err(|_| RuntimeFailure::Internal {
+        detail: "Bun JSON-RPC handshake worker panicked".to_owned(),
+    })??;
     verify_handshake(expected, &actual, capability)?;
     let session = actual
         .session

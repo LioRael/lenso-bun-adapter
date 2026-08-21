@@ -12,6 +12,7 @@ lenso-app-plan = { path = "../lenso-app-plan" }
 lenso-kernel = { path = "../lenso-kernel" }
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
