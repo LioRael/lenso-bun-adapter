@@ -1,0 +1,526 @@
+use std::{
+    any::Any,
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+    process::{Command, Stdio},
+    rc::Rc,
+    sync::Arc,
+};
+
+use futures::{FutureExt, future::LocalBoxFuture};
+use lenso_app_plan::{ExecutionClassId, ModuleInstancePlan, ResolvedAppPlan};
+use lenso_kernel::{
+    ActivateContext, DeactivateContext, ManagedResource, ModuleFuture, ModuleLifecycle,
+    NativeRequestEndpoint, PreparedBinding, PreparedNativeApp, PreparedNativeModule,
+    RuntimeFailure,
+};
+use serde_json::Value;
+
+use crate::{
+    protocol::{EndpointDescriptor, WireOutcome, WireRequest, from_wire_failure, handshake_for},
+    transport::{ProcessState, TransportClient, open_transport, spawn_process},
+};
+
+pub use crate::transport::BunWire;
+
+/// Codec bridge generated Capability packages implement at their Adapter edge.
+pub trait BunCapabilityCodec: std::fmt::Debug + 'static {
+    /// Stable portable Capability series identity.
+    fn capability_id(&self) -> &'static str;
+    /// Exact generated Descriptor version.
+    fn descriptor_version(&self) -> &'static str;
+    /// Exact generated Operation table.
+    fn operations(&self) -> &'static [&'static str];
+    /// Converts one generated request value to a validated portable JSON value.
+    fn encode_request(&self, operation: &str, request: &dyn Any) -> Result<Value, RuntimeFailure>;
+    /// Converts a successful portable JSON value to the generated response value.
+    fn decode_response(
+        &self,
+        operation: &str,
+        value: Value,
+    ) -> Result<Box<dyn Any>, RuntimeFailure>;
+    /// Converts a Domain Error value to the generated error value.
+    fn decode_domain_error(
+        &self,
+        operation: &str,
+        value: Value,
+    ) -> Result<Box<dyn Any>, RuntimeFailure>;
+}
+
+/// Configuration owned by one Bun Execution Adapter package.
+#[derive(Clone, Debug)]
+pub struct BunAdapterConfig {
+    bun_binary: PathBuf,
+    wire: BunWire,
+    working_directory: PathBuf,
+    max_frame_bytes: usize,
+    request_queue_capacity: usize,
+}
+
+impl BunAdapterConfig {
+    /// Creates a Bun process configuration with bounded defaults.
+    pub fn new(bun_binary: impl Into<PathBuf>, wire: BunWire) -> Self {
+        Self {
+            bun_binary: bun_binary.into(),
+            wire,
+            working_directory: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            max_frame_bytes: crate::DEFAULT_MAX_FRAME_BYTES,
+            request_queue_capacity: crate::protocol::DEFAULT_REQUEST_QUEUE_CAPACITY,
+        }
+    }
+
+    /// Selects the directory used to resolve Plan entrypoints.
+    #[must_use]
+    pub fn with_working_directory(mut self, working_directory: impl Into<PathBuf>) -> Self {
+        self.working_directory = working_directory.into();
+        self
+    }
+
+    /// Sets the hard maximum for one encoded frame or JSON-RPC body.
+    #[must_use]
+    pub fn with_max_frame_bytes(mut self, max_frame_bytes: usize) -> Self {
+        self.max_frame_bytes = max_frame_bytes.max(1);
+        self
+    }
+
+    /// Sets the bounded Adapter-owned request queue.
+    #[must_use]
+    pub fn with_request_queue_capacity(mut self, capacity: usize) -> Self {
+        self.request_queue_capacity = capacity.max(1);
+        self
+    }
+
+    /// Returns the selected wire implementation.
+    pub const fn wire(&self) -> BunWire {
+        self.wire
+    }
+}
+
+/// Bun child-process Execution Adapter.
+#[derive(Debug)]
+pub struct BunAdapter {
+    config: BunAdapterConfig,
+    codecs: BTreeMap<String, Rc<dyn BunCapabilityCodec>>,
+}
+
+impl BunAdapter {
+    /// Creates an Adapter for one Bun binary and one candidate wire.
+    pub fn new(bun_binary: impl Into<PathBuf>, wire: BunWire) -> Self {
+        Self {
+            config: BunAdapterConfig::new(bun_binary, wire),
+            codecs: BTreeMap::new(),
+        }
+    }
+
+    /// Creates the selected production Adapter configuration.
+    pub fn production(bun_binary: impl Into<PathBuf>) -> Self {
+        Self::new(bun_binary, BunWire::JsonRpcHttp)
+    }
+
+    /// Applies adapter-level process and queue settings.
+    #[must_use]
+    pub fn with_config(mut self, config: BunAdapterConfig) -> Self {
+        self.config = config;
+        self
+    }
+
+    /// Registers the generated codec for one portable Capability.
+    #[must_use]
+    pub fn with_codec(mut self, codec: impl BunCapabilityCodec) -> Self {
+        self.codecs
+            .insert(codec.capability_id().to_owned(), Rc::new(codec));
+        self
+    }
+
+    /// Returns the selected wire implementation.
+    pub const fn wire(&self) -> BunWire {
+        self.config.wire
+    }
+
+    fn prepare_instance(
+        &self,
+        instance: &ModuleInstancePlan,
+    ) -> Result<PreparedNativeModule, RuntimeFailure> {
+        if instance.entrypoint() == "default" || instance.entrypoint().is_empty() {
+            return Err(RuntimeFailure::InvalidResolvedPlan {
+                detail: format!(
+                    "Bun Module Instance `{}` needs a script entrypoint",
+                    instance.instance_key()
+                ),
+            });
+        }
+        let mut descriptors = Vec::with_capacity(instance.provided_capabilities().len());
+        let mut codecs = Vec::with_capacity(instance.provided_capabilities().len());
+        let mut capability_ids = BTreeMap::new();
+        for endpoint in instance.provided_capabilities() {
+            let codec = self.codecs.get(endpoint.capability_id()).ok_or_else(|| {
+                RuntimeFailure::InvalidResolvedPlan {
+                    detail: format!(
+                        "Bun Adapter has no generated codec for Capability `{}`",
+                        endpoint.capability_id()
+                    ),
+                }
+            })?;
+            let operations: Vec<_> = codec
+                .operations()
+                .iter()
+                .map(|operation| (*operation).to_owned())
+                .collect();
+            let expected_operations: Vec<_> = endpoint.operations().to_vec();
+            if codec.descriptor_version() != endpoint.descriptor_version()
+                || operations != expected_operations
+            {
+                return Err(RuntimeFailure::ProtocolViolation {
+                    capability: codec.capability_id(),
+                });
+            }
+            descriptors.push(EndpointDescriptor {
+                capability_id: endpoint.capability_id().to_owned(),
+                descriptor_version: endpoint.descriptor_version().to_owned(),
+                operations,
+            });
+            capability_ids.insert(endpoint.capability_id().to_owned(), codec.capability_id());
+            codecs.push(codec.clone());
+        }
+        let process_capability = codecs
+            .first()
+            .map_or("lenso.bun-process@1", |codec| codec.capability_id());
+        let process = self.spawn_process(instance, &descriptors, process_capability)?;
+        let handshake = handshake_for(descriptors, self.config.max_frame_bytes);
+        let transport = match open_transport(
+            &process,
+            self.config.wire,
+            &handshake,
+            self.config.request_queue_capacity,
+            Arc::new(capability_ids),
+        ) {
+            Ok(transport) => transport,
+            Err(error) => {
+                process.stop();
+                return Err(error);
+            }
+        };
+        let endpoints = instance
+            .provided_capabilities()
+            .iter()
+            .zip(codecs)
+            .map(|(descriptor, codec)| {
+                Rc::new(BunRequestEndpoint {
+                    capability: descriptor.capability_id().to_owned(),
+                    codec,
+                    transport: transport.clone(),
+                }) as Rc<dyn NativeRequestEndpoint>
+            })
+            .collect();
+        Ok(PreparedNativeModule::with_lifecycle(
+            endpoints,
+            Rc::new(BunModuleLifecycle { transport }),
+        ))
+    }
+
+    fn spawn_process(
+        &self,
+        instance: &ModuleInstancePlan,
+        endpoints: &[EndpointDescriptor],
+        capability: &'static str,
+    ) -> Result<Arc<ProcessState>, RuntimeFailure> {
+        let entrypoint = Path::new(instance.entrypoint());
+        let entrypoint = if entrypoint.is_absolute() {
+            entrypoint.to_owned()
+        } else {
+            self.config.working_directory.join(entrypoint)
+        };
+        if !entrypoint.is_file() {
+            return Err(RuntimeFailure::InvalidResolvedPlan {
+                detail: format!(
+                    "Bun entrypoint `{}` for Module Instance `{}` does not exist",
+                    entrypoint.display(),
+                    instance.instance_key()
+                ),
+            });
+        }
+        let mut command = Command::new(&self.config.bun_binary);
+        command
+            .arg("run")
+            .arg(&entrypoint)
+            .arg("--")
+            .arg("--lenso-transport")
+            .arg(self.config.wire.argument())
+            .arg("--lenso-max-frame-bytes")
+            .arg(self.config.max_frame_bytes.to_string())
+            .arg("--lenso-endpoints-json")
+            .arg(
+                serde_json::to_string(endpoints).map_err(|error| RuntimeFailure::Internal {
+                    detail: format!("failed to encode Bun endpoint descriptors: {error}"),
+                })?,
+            )
+            .arg("--lenso-port")
+            .arg("0")
+            .current_dir(&self.config.working_directory)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let process = spawn_process(command, capability)?;
+        Ok(process)
+    }
+}
+
+impl lenso_kernel::ExecutionAdapter for BunAdapter {
+    fn execution_class(&self) -> ExecutionClassId {
+        ExecutionClassId::bun_child_process()
+    }
+
+    fn prepare(&self, plan: &ResolvedAppPlan) -> Result<PreparedNativeApp, RuntimeFailure> {
+        plan.validate()
+            .map_err(|error| RuntimeFailure::InvalidResolvedPlan {
+                detail: error.to_string(),
+            })?;
+        let mut generations = BTreeMap::new();
+        let mut endpoints = BTreeMap::new();
+        for instance in plan
+            .module_instances()
+            .iter()
+            .filter(|instance| instance.execution_class() == &ExecutionClassId::bun_child_process())
+        {
+            let generation = self.prepare_instance(instance)?;
+            for endpoint in generation.endpoints() {
+                endpoints.insert(
+                    (
+                        instance.instance_key().to_owned(),
+                        endpoint.capability_id().to_owned(),
+                    ),
+                    endpoint.clone(),
+                );
+            }
+            generations.insert(instance.instance_key().to_owned(), generation);
+        }
+
+        let bindings = plan
+            .capability_bindings()
+            .iter()
+            .filter_map(|binding| {
+                endpoints
+                    .get(&(
+                        binding.provider_instance().to_owned(),
+                        binding.capability_id().to_owned(),
+                    ))
+                    .map(|endpoint| {
+                        PreparedBinding::new(
+                            binding.consumer_instance(),
+                            binding.provider_instance(),
+                            endpoint.clone(),
+                        )
+                    })
+            })
+            .collect();
+        Ok(PreparedNativeApp::new(bindings, generations))
+    }
+
+    fn recreate(
+        &self,
+        plan: &ResolvedAppPlan,
+        instance_key: &str,
+    ) -> Result<PreparedNativeModule, RuntimeFailure> {
+        let instance = plan
+            .module_instances()
+            .iter()
+            .find(|instance| instance.instance_key() == instance_key)
+            .ok_or_else(|| RuntimeFailure::InvalidResolvedPlan {
+                detail: format!("unknown Module Instance `{instance_key}`"),
+            })?;
+        self.prepare_instance(instance)
+    }
+}
+
+#[derive(Debug)]
+struct BunRequestEndpoint {
+    capability: String,
+    codec: Rc<dyn BunCapabilityCodec>,
+    transport: TransportClient,
+}
+
+impl NativeRequestEndpoint for BunRequestEndpoint {
+    fn capability_id(&self) -> &'static str {
+        self.codec.capability_id()
+    }
+
+    fn descriptor_version(&self) -> &'static str {
+        self.codec.descriptor_version()
+    }
+
+    fn operations(&self) -> &'static [&'static str] {
+        self.codec.operations()
+    }
+
+    fn invoke(
+        &self,
+        operation: &str,
+        request: Box<dyn Any>,
+        context: lenso_kernel::InvocationContext,
+    ) -> LocalBoxFuture<'static, Result<Result<Box<dyn Any>, Box<dyn Any>>, RuntimeFailure>> {
+        if !self.codec.operations().contains(&operation) {
+            return Box::pin(futures::future::ready(Err(
+                RuntimeFailure::UnknownOperation {
+                    capability: self.codec.capability_id(),
+                    operation: operation.to_owned(),
+                },
+            )));
+        }
+        let payload = match self.codec.encode_request(operation, request.as_ref()) {
+            Ok(payload) => payload,
+            Err(error) => return Box::pin(futures::future::ready(Err(error))),
+        };
+        let operation = operation.to_owned();
+        let wire_request = WireRequest {
+            request_id: context.request_id(),
+            capability_id: self.capability.clone(),
+            operation: operation.clone(),
+            deadline_nanos: crate::protocol::deadline_nanos(context.deadline()),
+            caller_instance: context.caller_instance().map(ToOwned::to_owned),
+            session: None,
+            payload,
+        };
+        let call = match self.transport.request(wire_request) {
+            Ok(call) => call,
+            Err(error) => return Box::pin(futures::future::ready(Err(error))),
+        };
+        let codec = self.codec.clone();
+        Box::pin(async move {
+            match call.await? {
+                WireOutcome::Success { value } => codec.decode_response(&operation, value).map(Ok),
+                WireOutcome::Domain { value } => {
+                    codec.decode_domain_error(&operation, value).map(Err)
+                }
+                WireOutcome::Runtime { failure } => {
+                    Err(from_wire_failure(codec.capability_id(), failure))
+                }
+            }
+        })
+    }
+}
+
+#[derive(Debug)]
+struct BunModuleLifecycle {
+    transport: TransportClient,
+}
+
+impl ModuleLifecycle for BunModuleLifecycle {
+    fn prepare(&self, context: lenso_kernel::PrepareContext) -> ModuleFuture {
+        let resource = BunProcessResource {
+            transport: self.transport.clone(),
+        };
+        Box::pin(async move {
+            context
+                .resources()
+                .register(resource)
+                .map_err(|error| RuntimeFailure::Internal {
+                    detail: format!("failed to register Bun process resource: {error:?}"),
+                })?;
+            Ok(())
+        })
+    }
+
+    fn activate(&self, context: ActivateContext) -> ModuleFuture {
+        let exit = self.transport.exit_waiter();
+        let cancellation = context.cancellation();
+        let task = async move {
+            let exit = exit.fuse();
+            let cancellation = cancellation.cancelled().fuse();
+            futures::pin_mut!(exit, cancellation);
+            match futures::future::select(exit, cancellation).await {
+                futures::future::Either::Left((Ok(()), _)) => {
+                    panic!("Bun child process exited; supervision must recreate the generation");
+                }
+                futures::future::Either::Left((Err(_), _))
+                | futures::future::Either::Right(((), _)) => {}
+            }
+        };
+        Box::pin(async move {
+            context
+                .tasks()
+                .spawn_local(Box::pin(task))
+                .map_err(|error| RuntimeFailure::Internal {
+                    detail: format!("failed to monitor Bun child process: {error:?}"),
+                })?;
+            Ok(())
+        })
+    }
+
+    fn deactivate(&self, _context: DeactivateContext) -> ModuleFuture {
+        Box::pin(futures::future::ready(Ok(())))
+    }
+}
+
+#[derive(Debug)]
+struct BunProcessResource {
+    transport: TransportClient,
+}
+
+impl ManagedResource for BunProcessResource {
+    fn release(&self) -> lenso_kernel::ResourceFuture {
+        let transport = self.transport.clone();
+        Box::pin(async move {
+            transport.shutdown();
+            Ok(())
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Debug)]
+    struct TestCodec;
+
+    impl BunCapabilityCodec for TestCodec {
+        fn capability_id(&self) -> &'static str {
+            "example.greeting@1"
+        }
+
+        fn descriptor_version(&self) -> &'static str {
+            "1.0.0"
+        }
+
+        fn operations(&self) -> &'static [&'static str] {
+            &["greet"]
+        }
+
+        fn encode_request(
+            &self,
+            _operation: &str,
+            request: &dyn Any,
+        ) -> Result<Value, RuntimeFailure> {
+            let request =
+                request
+                    .downcast_ref::<String>()
+                    .ok_or(RuntimeFailure::ProtocolViolation {
+                        capability: self.capability_id(),
+                    })?;
+            Ok(Value::String(request.clone()))
+        }
+
+        fn decode_response(
+            &self,
+            _operation: &str,
+            value: Value,
+        ) -> Result<Box<dyn Any>, RuntimeFailure> {
+            Ok(Box::new(value))
+        }
+
+        fn decode_domain_error(
+            &self,
+            _operation: &str,
+            value: Value,
+        ) -> Result<Box<dyn Any>, RuntimeFailure> {
+            Ok(Box::new(value))
+        }
+    }
+
+    #[test]
+    fn production_defaults_to_the_selected_json_rpc_wire() {
+        assert_eq!(BunAdapter::production("bun").wire(), BunWire::JsonRpcHttp);
+        let adapter = BunAdapter::new("bun", BunWire::FramedStdio).with_codec(TestCodec);
+        assert_eq!(adapter.wire(), BunWire::FramedStdio);
+    }
+}
