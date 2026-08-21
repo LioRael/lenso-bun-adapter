@@ -20,6 +20,15 @@ pub(crate) struct EndpointDescriptor {
     pub operations: Vec<String>,
     #[serde(default)]
     pub stream_operations: Vec<String>,
+    #[serde(default)]
+    pub event_operations: Vec<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub(crate) struct EventBindingDescriptor {
+    pub capability_id: String,
+    pub caller_instance: String,
+    pub capacity: usize,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -43,6 +52,18 @@ pub(crate) struct HandshakeAck {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct WireRequest {
+    pub request_id: u64,
+    pub capability_id: String,
+    pub operation: String,
+    pub deadline_nanos: Option<u64>,
+    pub caller_instance: Option<String>,
+    #[serde(default)]
+    pub session: Option<String>,
+    pub payload: Value,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct WireEventPublish {
     pub request_id: u64,
     pub capability_id: String,
     pub operation: String,
@@ -174,6 +195,7 @@ pub(crate) enum FramedMessage {
     Handshake(Handshake),
     HandshakeAck(HandshakeAck),
     Request(WireRequest),
+    EventPublish(WireEventPublish),
     StreamOpen(WireStreamOpen),
     StreamCall(WireStreamCall),
     StreamCancel {
@@ -399,6 +421,7 @@ mod tests {
                 descriptor_version: "1.0.0".to_owned(),
                 operations: vec!["greet".to_owned()],
                 stream_operations: Vec::new(),
+                event_operations: Vec::new(),
             }],
             max_frame_bytes,
         )
@@ -455,6 +478,32 @@ mod tests {
         .expect("stream call should encode");
         assert_eq!(value["kind"], "stream_call");
         assert_eq!(value["action"], "send");
+    }
+
+    #[test]
+    fn event_publish_frames_use_the_shared_response_outcome() {
+        let value = serde_json::to_value(FramedMessage::EventPublish(WireEventPublish {
+            request_id: 7,
+            capability_id: "example.notifications@1".to_owned(),
+            operation: "notify".to_owned(),
+            deadline_nanos: None,
+            caller_instance: Some("consumer".to_owned()),
+            session: Some("session".to_owned()),
+            payload: serde_json::json!({"message": "hello", "sequence": 1}),
+        }))
+        .expect("event publish should encode");
+        assert_eq!(value["kind"], "event_publish");
+        assert_eq!(value["operation"], "notify");
+        assert_eq!(value["payload"]["sequence"], 1);
+
+        let response = serde_json::to_value(FramedMessage::Response {
+            request_id: 7,
+            outcome: WireOutcome::Success { value: Value::Null },
+        })
+        .expect("event response should use the shared response shape");
+        assert_eq!(response["kind"], "response");
+        assert_eq!(response["outcome"]["kind"], "success");
+        assert!(response["outcome"]["value"].is_null());
     }
 
     #[test]

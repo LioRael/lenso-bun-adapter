@@ -17,14 +17,14 @@ use lenso_capability_greeting::{
     decode_greet_error, decode_greet_response, encode_greet_request,
 };
 use lenso_kernel::{
-    CancellationToken, DeterministicDriver, ExecutionAdapterCatalog, Kernel, RuntimeDriver,
-    RuntimeFailure, StreamCapability, StreamEvent,
+    CancellationToken, DeterministicDriver, EventAdmission, EventCapability,
+    ExecutionAdapterCatalog, Kernel, RuntimeDriver, RuntimeFailure, StreamCapability, StreamEvent,
 };
 
 use lenso_bun_adapter::{
-    BunAdapter, BunAdapterConfig, BunCapabilityCodec, BunProviderDescriptor, BunProviderHandler,
-    BunProviderServer, BunProviderStream, BunRequest, BunResponse, BunStreamAction, BunStreamEvent,
-    BunStreamOpenResponse, BunStreamReceive, BunWire,
+    BunAdapter, BunAdapterConfig, BunCapabilityCodec, BunEventAction, BunEventBinding,
+    BunProviderDescriptor, BunProviderHandler, BunProviderServer, BunProviderStream, BunRequest,
+    BunResponse, BunStreamAction, BunStreamEvent, BunStreamOpenResponse, BunStreamReceive, BunWire,
 };
 
 #[derive(Debug)]
@@ -108,6 +108,102 @@ impl BunCapabilityCodec for GreetingCodec {
                 capability: CAPABILITY_ID,
             }
         })?))
+    }
+}
+
+const EVENT_CAPABILITY_ID: &str = "example.notifications@1";
+const EVENT_DESCRIPTOR_VERSION: &str = "1.0.0";
+const EVENT_OPERATION: &str = "notify";
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+struct Notification {
+    message: String,
+    sequence: u64,
+}
+
+#[derive(Debug)]
+struct Notifications;
+
+impl EventCapability for Notifications {
+    type Event = Notification;
+
+    const ID: &'static str = EVENT_CAPABILITY_ID;
+    const DESCRIPTOR_VERSION: &'static str = EVENT_DESCRIPTOR_VERSION;
+}
+
+#[derive(Debug)]
+struct NotificationCodec;
+
+impl NotificationCodec {
+    fn unknown(operation: &str) -> RuntimeFailure {
+        RuntimeFailure::UnknownOperation {
+            capability: EVENT_CAPABILITY_ID,
+            operation: operation.to_owned(),
+        }
+    }
+}
+
+impl BunCapabilityCodec for NotificationCodec {
+    fn capability_id(&self) -> &'static str {
+        EVENT_CAPABILITY_ID
+    }
+
+    fn descriptor_version(&self) -> &'static str {
+        EVENT_DESCRIPTOR_VERSION
+    }
+
+    fn operations(&self) -> &'static [&'static str] {
+        &[EVENT_OPERATION]
+    }
+
+    fn event_operations(&self) -> &'static [&'static str] {
+        &[EVENT_OPERATION]
+    }
+
+    fn request_operations(&self) -> &'static [&'static str] {
+        &[]
+    }
+
+    fn encode_request(
+        &self,
+        operation: &str,
+        _request: &dyn Any,
+    ) -> Result<serde_json::Value, RuntimeFailure> {
+        Err(Self::unknown(operation))
+    }
+
+    fn encode_event(
+        &self,
+        operation: &str,
+        event: &dyn Any,
+    ) -> Result<serde_json::Value, RuntimeFailure> {
+        if operation != EVENT_OPERATION {
+            return Err(Self::unknown(operation));
+        }
+        serde_json::to_value(event.downcast_ref::<Notification>().ok_or(
+            RuntimeFailure::ProtocolViolation {
+                capability: EVENT_CAPABILITY_ID,
+            },
+        )?)
+        .map_err(|_| RuntimeFailure::ProtocolViolation {
+            capability: EVENT_CAPABILITY_ID,
+        })
+    }
+
+    fn decode_response(
+        &self,
+        operation: &str,
+        _value: serde_json::Value,
+    ) -> Result<Box<dyn Any>, RuntimeFailure> {
+        Err(Self::unknown(operation))
+    }
+
+    fn decode_domain_error(
+        &self,
+        operation: &str,
+        _value: serde_json::Value,
+    ) -> Result<Box<dyn Any>, RuntimeFailure> {
+        Err(Self::unknown(operation))
     }
 }
 
@@ -367,6 +463,30 @@ impl BunProviderHandler for RustGreetingProvider {
     }
 }
 
+#[derive(Debug, Clone)]
+struct RustNotificationProvider {
+    seen: Arc<Mutex<Vec<Notification>>>,
+}
+
+impl BunProviderHandler for RustNotificationProvider {
+    fn invoke(&self, request: BunRequest) -> BunResponse {
+        BunResponse::Runtime(RuntimeFailure::UnknownOperation {
+            capability: EVENT_CAPABILITY_ID,
+            operation: request.operation,
+        })
+    }
+
+    fn publish_event(&self, request: BunRequest) -> BunEventAction {
+        let Ok(event) = serde_json::from_value::<Notification>(request.payload) else {
+            return BunEventAction::Runtime(RuntimeFailure::ProtocolViolation {
+                capability: EVENT_CAPABILITY_ID,
+            });
+        };
+        self.seen.lock().expect("event recorder lock").push(event);
+        BunEventAction::Accepted
+    }
+}
+
 #[derive(Debug)]
 struct CancellableRustGreetingProvider;
 
@@ -550,6 +670,64 @@ fn greeting_plan(script: &Path) -> lenso_app_plan::ResolvedAppPlan {
     .expect("Bun cross-runtime plan should resolve")
 }
 
+fn event_plan(accepting_script: &Path, rejecting_script: &Path) -> lenso_app_plan::ResolvedAppPlan {
+    let endpoint = CapabilityEndpointPlan::new(
+        EVENT_CAPABILITY_ID,
+        EVENT_DESCRIPTOR_VERSION,
+        [EVENT_OPERATION],
+    )
+    .with_event_operation(EVENT_OPERATION)
+    .with_event_capacity(2);
+    let provider_a = ModuleInstancePlan::new("bun-provider-a", "fixture.bun.events")
+        .with_entrypoint(accepting_script.to_string_lossy())
+        .with_execution_class(ExecutionClassId::bun_child_process())
+        .with_restart_policy(RestartPolicy::on_failure(
+            2,
+            Duration::from_secs(5),
+            Duration::ZERO,
+            Duration::ZERO,
+            Duration::ZERO,
+        ))
+        .with_capability(endpoint.clone());
+    let provider_b = ModuleInstancePlan::new("bun-provider-b", "fixture.bun.events.reject")
+        .with_entrypoint(rejecting_script.to_string_lossy())
+        .with_execution_class(ExecutionClassId::bun_child_process())
+        .with_restart_policy(RestartPolicy::on_failure(
+            2,
+            Duration::from_secs(5),
+            Duration::ZERO,
+            Duration::ZERO,
+            Duration::ZERO,
+        ))
+        .with_capability(endpoint);
+    let consumer = ModuleInstancePlan::new("bun-consumer", "fixture.bun.events.consumer")
+        .with_entrypoint(accepting_script.to_string_lossy())
+        .with_execution_class(ExecutionClassId::bun_child_process())
+        .with_requirement(CapabilityRequirementPlan::many(
+            EVENT_CAPABILITY_ID,
+            EVENT_DESCRIPTOR_VERSION,
+        ));
+    AppComposition::new(
+        vec![provider_a, provider_b, consumer],
+        vec![
+            CapabilityBinding::new(
+                "bun-consumer",
+                EVENT_CAPABILITY_ID,
+                EVENT_DESCRIPTOR_VERSION,
+                "bun-provider-a",
+            ),
+            CapabilityBinding::new(
+                "bun-consumer",
+                EVENT_CAPABILITY_ID,
+                EVENT_DESCRIPTOR_VERSION,
+                "bun-provider-b",
+            ),
+        ],
+    )
+    .resolve()
+    .expect("Bun Event Composition should resolve")
+}
+
 fn stream_plan(script: &Path) -> lenso_app_plan::ResolvedAppPlan {
     stream_plan_with_concurrency(script, 1)
 }
@@ -701,6 +879,175 @@ fn json_rpc_matches_the_typed_request_contract() {
 fn selected_wire_preserves_domain_errors() {
     let result = run_greeting(BunWire::JsonRpcHttp, "").expect("call should reach Bun");
     assert_eq!(result, Err(GreetError::EmptyName));
+}
+
+#[test]
+#[ignore = "requires Bun; CI runs ignored cross-runtime tests after installing Bun"]
+fn both_wires_report_partial_event_admission_without_short_circuiting_fan_out() {
+    for wire in [BunWire::FramedStdio, BunWire::JsonRpcHttp] {
+        let accepting_script = fixture("event-provider.ts");
+        let rejecting_script = fixture("event-provider-reject.ts");
+        let driver = DeterministicDriver::new();
+        let adapter = BunAdapter::new(bun_binary(), wire).with_codec(NotificationCodec);
+        let app = driver
+            .run(Kernel::start(
+                event_plan(&accepting_script, &rejecting_script),
+                driver.clone(),
+                ExecutionAdapterCatalog::single(adapter),
+            ))
+            .expect("Bun Event App should start");
+        let handle = app
+            .many_event_handle::<Notifications>("bun-consumer")
+            .expect("many Event binding should be materialized");
+        let outcomes = driver.run(handle.publish(
+            EVENT_OPERATION,
+            Notification {
+                message: "partial-admission".to_owned(),
+                sequence: 1,
+            },
+        ));
+        assert_eq!(
+            outcomes
+                .iter()
+                .map(|outcome| (outcome.subscriber_instance(), outcome.admission()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("bun-provider-a", EventAdmission::Accepted),
+                ("bun-provider-b", EventAdmission::Exhausted),
+            ],
+            "{wire:?} should attempt every explicit subscriber binding"
+        );
+        let _ = driver.run(app.shutdown(Duration::from_secs(2)));
+    }
+}
+
+#[test]
+#[ignore = "requires Bun; CI runs ignored cross-runtime tests after installing Bun"]
+fn both_wires_bound_each_bun_event_subscriber_queue_independently() {
+    for wire in [BunWire::FramedStdio, BunWire::JsonRpcHttp] {
+        let accepting_script = fixture("event-provider.ts");
+        let rejecting_script = fixture("event-provider-reject.ts");
+        let driver = DeterministicDriver::new();
+        let adapter = BunAdapter::new(bun_binary(), wire).with_codec(NotificationCodec);
+        let app = driver
+            .run(Kernel::start(
+                event_plan(&accepting_script, &rejecting_script),
+                driver.clone(),
+                ExecutionAdapterCatalog::single(adapter),
+            ))
+            .expect("Bun Event App should start");
+        let handle = app
+            .many_event_handle::<Notifications>("bun-consumer")
+            .expect("many Event binding should be materialized");
+        let publications = futures::future::join_all((0..8).map(|sequence| {
+            handle.publish(
+                EVENT_OPERATION,
+                Notification {
+                    message: "slow".to_owned(),
+                    sequence,
+                },
+            )
+        }));
+        let outcomes = driver.run(publications);
+        assert!(outcomes.iter().all(|outcome| outcome.len() == 2));
+        let accepting_statuses: Vec<_> = outcomes
+            .iter()
+            .map(|outcome| outcome[0].admission())
+            .collect();
+        assert_eq!(
+            accepting_statuses
+                .iter()
+                .filter(|status| **status == EventAdmission::Accepted)
+                .count(),
+            2,
+            "{wire:?} should admit only the active event and its two-slot volatile queue"
+        );
+        assert!(
+            accepting_statuses
+                .iter()
+                .any(|status| *status == EventAdmission::Exhausted)
+        );
+        assert!(
+            outcomes
+                .iter()
+                .all(|outcome| outcome[1].admission() == EventAdmission::Exhausted)
+        );
+        let _ = driver.run(app.shutdown(Duration::from_secs(2)));
+    }
+}
+
+#[test]
+#[ignore = "requires Bun; CI runs ignored cross-runtime tests after installing Bun"]
+fn accepted_event_is_not_replayed_when_a_bun_subscriber_exits_and_recovers() {
+    for wire in [BunWire::FramedStdio, BunWire::JsonRpcHttp] {
+        let accepting_script = fixture("event-provider.ts");
+        let rejecting_script = fixture("event-provider-reject.ts");
+        let driver = DeterministicDriver::new();
+        let adapter = BunAdapter::new(bun_binary(), wire).with_codec(NotificationCodec);
+        let app = driver
+            .run(Kernel::start(
+                event_plan(&accepting_script, &rejecting_script),
+                driver.clone(),
+                ExecutionAdapterCatalog::single(adapter),
+            ))
+            .expect("Bun Event App should start");
+        let handle = app
+            .many_event_handle::<Notifications>("bun-consumer")
+            .expect("many Event binding should be materialized");
+        let accepted = driver.run(handle.publish(
+            EVENT_OPERATION,
+            Notification {
+                message: "__crash__".to_owned(),
+                sequence: 1,
+            },
+        ));
+        assert_eq!(accepted[0].admission(), EventAdmission::Accepted);
+
+        let mut restarted = false;
+        for _ in 0..100 {
+            driver.run(driver.yield_now());
+            if app
+                .module_generation("bun-provider-a")
+                .is_some_and(|generation| generation >= 2)
+            {
+                restarted = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            restarted,
+            "{wire:?} Event subscriber should recover; generation={:?}, failure={:?}",
+            app.module_generation("bun-provider-a"),
+            app.terminal_failure()
+        );
+        assert_eq!(
+            app.module_generation("bun-provider-a"),
+            Some(2),
+            "{wire:?} should recreate exactly one generation after the crashing Event"
+        );
+        for _ in 0..25 {
+            driver.run(driver.yield_now());
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(
+            app.module_generation("bun-provider-a"),
+            Some(2),
+            "{wire:?} must not replay the accepted crashing Event into the recovered generation"
+        );
+        assert!(app.terminal_failure().is_none());
+
+        let after_restart = driver.run(handle.publish(
+            EVENT_OPERATION,
+            Notification {
+                message: "after-restart".to_owned(),
+                sequence: 2,
+            },
+        ));
+        assert_eq!(after_restart[0].admission(), EventAdmission::Accepted);
+        assert_eq!(after_restart[1].admission(), EventAdmission::Exhausted);
+        let _ = driver.run(app.shutdown(Duration::from_secs(2)));
+    }
 }
 
 #[test]
@@ -1108,6 +1455,27 @@ fn run_bun_consumer(url: &str, name: &str, operation: &str) -> serde_json::Value
     run_bun_consumer_with_args(url, name, operation, &[])
 }
 
+fn run_bun_event_consumer(url: &str, message: &str, sequence: u64) -> serde_json::Value {
+    let output = Command::new(bun_binary())
+        .arg("run")
+        .arg(fixture("event-consumer.ts"))
+        .arg("--")
+        .arg("--lenso-url")
+        .arg(url)
+        .arg("--message")
+        .arg(message)
+        .arg("--sequence")
+        .arg(sequence.to_string())
+        .output()
+        .expect("Bun Event consumer should start");
+    assert!(
+        output.status.success(),
+        "Bun Event consumer failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).expect("Bun Event consumer should emit JSON")
+}
+
 fn run_bun_consumer_with_args(
     url: &str,
     name: &str,
@@ -1184,6 +1552,8 @@ fn bun_consumer_can_call_a_rust_provider_bridge() {
             descriptor_version: DESCRIPTOR_VERSION.to_owned(),
             operations: vec!["greet".to_owned()],
             stream_operations: Vec::new(),
+            event_operations: Vec::new(),
+            event_bindings: Vec::new(),
         },
         64 * 1024,
         8,
@@ -1204,6 +1574,46 @@ fn bun_consumer_can_call_a_rust_provider_bridge() {
 
 #[test]
 #[ignore = "requires Bun; CI runs ignored cross-runtime tests after installing Bun"]
+fn bun_consumer_can_publish_events_to_a_rust_provider_bridge() {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let server = BunProviderServer::json_rpc(
+        BunProviderDescriptor {
+            capability_id: EVENT_CAPABILITY_ID,
+            descriptor_version: EVENT_DESCRIPTOR_VERSION.to_owned(),
+            operations: vec![EVENT_OPERATION.to_owned()],
+            stream_operations: Vec::new(),
+            event_operations: vec![EVENT_OPERATION.to_owned()],
+            event_bindings: vec![BunEventBinding::new("bun-consumer", 8)],
+        },
+        64 * 1024,
+        8,
+        RustNotificationProvider { seen: seen.clone() },
+    )
+    .expect("Rust Event provider bridge should start");
+    let url = format!("http://{}", server.address());
+    let accepted = run_bun_event_consumer(&url, "from-bun", 1);
+    assert_eq!(
+        accepted,
+        serde_json::json!({ "kind": "success", "value": null })
+    );
+    for _ in 0..100 {
+        if seen.lock().expect("event recorder lock").len() == 1 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    server.shutdown();
+    assert_eq!(
+        &*seen.lock().expect("event recorder lock"),
+        &[Notification {
+            message: "from-bun".to_owned(),
+            sequence: 1,
+        }]
+    );
+}
+
+#[test]
+#[ignore = "requires Bun; CI runs ignored cross-runtime tests after installing Bun"]
 fn bun_consumer_can_open_full_duplex_streams_from_a_rust_provider_bridge() {
     let server = BunProviderServer::json_rpc(
         BunProviderDescriptor {
@@ -1211,6 +1621,8 @@ fn bun_consumer_can_open_full_duplex_streams_from_a_rust_provider_bridge() {
             descriptor_version: CHAT_DESCRIPTOR_VERSION.to_owned(),
             operations: vec![CHAT_OPERATION.to_owned()],
             stream_operations: vec![CHAT_OPERATION.to_owned()],
+            event_operations: Vec::new(),
+            event_bindings: Vec::new(),
         },
         64 * 1024,
         8,
@@ -1252,6 +1664,8 @@ fn shared_request_corpus_has_the_same_outcomes_for_a_bun_consumer() {
             descriptor_version: DESCRIPTOR_VERSION.to_owned(),
             operations: vec!["greet".to_owned()],
             stream_operations: Vec::new(),
+            event_operations: Vec::new(),
+            event_bindings: Vec::new(),
         },
         64 * 1024,
         8,
@@ -1303,6 +1717,8 @@ fn shared_request_corpus_has_the_same_outcomes_for_a_bun_consumer() {
             descriptor_version: DESCRIPTOR_VERSION.to_owned(),
             operations: vec!["greet".to_owned()],
             stream_operations: Vec::new(),
+            event_operations: Vec::new(),
+            event_bindings: Vec::new(),
         },
         64 * 1024,
         8,
@@ -1323,6 +1739,8 @@ fn shared_request_corpus_has_the_same_outcomes_for_a_bun_consumer() {
             descriptor_version: DESCRIPTOR_VERSION.to_owned(),
             operations: vec!["greet".to_owned()],
             stream_operations: Vec::new(),
+            event_operations: Vec::new(),
+            event_bindings: Vec::new(),
         },
         64 * 1024,
         1,
@@ -1355,6 +1773,8 @@ fn bun_consumer_can_cancel_a_rust_provider_bridge() {
             descriptor_version: DESCRIPTOR_VERSION.to_owned(),
             operations: vec!["greet".to_owned()],
             stream_operations: Vec::new(),
+            event_operations: Vec::new(),
+            event_bindings: Vec::new(),
         },
         64 * 1024,
         8,
