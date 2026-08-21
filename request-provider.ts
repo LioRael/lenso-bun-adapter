@@ -12,6 +12,7 @@ import {
   bindActor,
   type WireExtension,
 } from "../../crates/lenso-auth-sdk/typescript/actor.ts";
+import { extractTraceContext } from "../../crates/lenso-otel-module/typescript/trace-context.ts";
 
 type EndpointDescriptor = {
   capability_id: string;
@@ -63,6 +64,11 @@ const secureGreetingEndpoint: EndpointDescriptor = {
   capability_id: "example.secure-greeting@1",
   descriptor_version: "1.0.0",
   operations: ["greet"],
+};
+const traceEndpoint: EndpointDescriptor = {
+  capability_id: "example.trace@1",
+  descriptor_version: "1.0.0",
+  operations: ["invoke"],
 };
 const expectedEndpoints = JSON.parse(
   argument("--lenso-endpoints-json", JSON.stringify([greetingEndpoint])),
@@ -149,6 +155,24 @@ async function handleRequest(request: WireRequest): Promise<WireOutcome> {
   }
   if (cancelled.has(request.request_id)) {
     return runtime("cancelled", undefined, request.request_id);
+  }
+  if (request.capability_id === traceEndpoint.capability_id && request.operation === "invoke") {
+    try {
+      const trace = await extractTraceContext(
+        request.extensions,
+        traceEndpoint.capability_id,
+        traceEndpoint.operations[0],
+        "lenso.otel",
+        "trace-key",
+      );
+      if (!trace) return runtime("protocol_violation", "trace context is missing");
+      return {
+        kind: "success",
+        value: trace,
+      };
+    } catch (error) {
+      return runtime("protocol_violation", String(error));
+    }
   }
   if (request.operation !== "greet") {
     return {
