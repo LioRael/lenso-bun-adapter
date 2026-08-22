@@ -1,0 +1,189 @@
+[
+  {
+    "name": "success",
+    "scenario": "request",
+    "request": {
+      "capability_id": "example.greeting@1",
+      "operation": "greet",
+      "payload": { "name": "Ada" }
+    },
+    "outcome": "success"
+  },
+  {
+    "name": "known-domain-error",
+    "scenario": "request",
+    "request": {
+      "capability_id": "example.greeting@1",
+      "operation": "greet",
+      "payload": { "name": "" }
+    },
+    "outcome": "domain"
+  },
+  {
+    "name": "unknown-domain-error",
+    "scenario": "request",
+    "request": {
+      "capability_id": "example.greeting@1",
+      "operation": "greet",
+      "payload": { "name": "__future_domain__" }
+    },
+    "outcome": "domain"
+  },
+  {
+    "name": "unknown-operation",
+    "scenario": "request",
+    "request": {
+      "capability_id": "example.greeting@1",
+      "operation": "missing",
+      "payload": { "name": "Ada" }
+    },
+    "outcome": "runtime",
+    "failure_kind": "unknown_operation"
+  },
+  {
+    "name": "runtime-unavailable",
+    "scenario": "request",
+    "request": {
+      "capability_id": "example.greeting@1",
+      "operation": "greet",
+      "payload": { "name": "__runtime_unavailable__" }
+    },
+    "outcome": "runtime",
+    "failure_kind": "unavailable"
+  },
+  {
+    "name": "runtime-ambiguous-binding",
+    "scenario": "request",
+    "request": {
+      "capability_id": "example.greeting@1",
+      "operation": "greet",
+      "payload": { "name": "__runtime_ambiguous_binding__" }
+    },
+    "outcome": "runtime",
+    "failure_kind": "ambiguous_binding"
+  },
+  {
+    "name": "runtime-missing-module-factory",
+    "scenario": "request",
+    "request": {
+      "capability_id": "example.greeting@1",
+      "operation": "greet",
+      "payload": { "name": "__runtime_missing_module_factory__" }
+    },
+    "outcome": "runtime",
+    "failure_kind": "missing_module_factory"
+  },
+  {
+    "name": "runtime-unavailable-execution-class",
+    "scenario": "request",
+    "request": {
+      "capability_id": "example.greeting@1",
+      "operation": "greet",
+      "payload": { "name": "__runtime_unavailable_execution_class__" }
+    },
+    "outcome": "runtime",
+    "failure_kind": "unavailable_execution_class"
+  },
+  {
+    "name": "runtime-invalid-resolved-plan",
+    "scenario": "request",
+    "request": {
+      "capability_id": "example.greeting@1",
+      "operation": "greet",
+      "payload": { "name": "__runtime_invalid_resolved_plan__" }
+    },
+    "outcome": "runtime",
+    "failure_kind": "invalid_resolved_plan"
+  },
+  {
+    "name": "runtime-admission-closed",
+    "scenario": "request",
+    "request": {
+      "capability_id": "example.greeting@1",
+      "operation": "greet",
+      "payload": { "name": "__runtime_admission_closed__" }
+    },
+    "outcome": "runtime",
+    "failure_kind": "admission_closed"
+  },
+  {
+    "name": "runtime-internal",
+    "scenario": "request",
+    "request": {
+      "capability_id": "example.greeting@1",
+      "operation": "greet",
+      "payload": { "name": "__runtime_internal__" }
+    },
+    "outcome": "runtime",
+    "failure_kind": "internal"
+  },
+  {
+    "name": "runtime-restart-exhausted",
+    "scenario": "request",
+    "request": {
+      "capability_id": "example.greeting@1",
+      "operation": "greet",
+      "payload": { "name": "__runtime_module_restart_exhausted__" }
+    },
+    "outcome": "runtime",
+    "failure_kind": "module_restart_exhausted"
+  },
+  {
+    "name": "deadline-exceeded",
+    "scenario": "deadline",
+    "request": {
+      "capability_id": "example.greeting@1",
+      "operation": "greet",
+      "payload": { "name": "__delay__" },
+      "deadline_nanos": 0
+    },
+    "outcome": "runtime",
+    "failure_kind": "deadline_exceeded"
+  },
+  {
+    "name": "cancelled",
+    "scenario": "cancellation",
+    "request": {
+      "capability_id": "example.greeting@1",
+      "operation": "greet",
+      "payload": { "name": "__delay__" }
+    },
+    "outcome": "runtime",
+    "failure_kind": "cancelled"
+  },
+  {
+    "name": "oversized-frame",
+    "scenario": "size-boundary",
+    "request": {
+      "capability_id": "example.greeting@1",
+      "operation": "greet",
+      "payload": { "name": "__oversized__" }
+    },
+    "outcome": "runtime",
+    "failure_kind": "protocol_violation",
+    "boundary_bytes": 65537
+  },
+  {
+    "name": "provider-crash",
+    "scenario": "process-failure",
+    "request": {
+      "capability_id": "example.greeting@1",
+      "operation": "greet",
+      "payload": { "name": "__crash__" }
+    },
+    "outcome": "runtime",
+    "failure_kind": "module_failure"
+  },
+  {
+    "name": "bounded-overload",
+    "scenario": "overload",
+    "request": {
+      "capability_id": "example.greeting@1",
+      "operation": "greet",
+      "payload": { "name": "__delay__" }
+    },
+    "outcome": "runtime",
+    "failure_kind": "resource_exhausted",
+    "queue_capacity": 32
+  }
+]
