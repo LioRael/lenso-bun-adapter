@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "captured_on": "2026-08-22",
+  "decision": "ADR-0063",
+  "fixture": "shared-nothing CPU-bound generated Greeting request",
+  "request_count": 120,
+  "cpu_work_per_request_ms": 2,
+  "build_profile": "test",
+  "host": {
+    "os": "Darwin 27.0.0 arm64",
+    "cpu": "Apple M2 Pro",
+    "rustc": "1.99.0-nightly (375b1431b 2026-07-10)"
+  },
+  "command": "/Users/leosouthey/Projects/framework/.lenso-tools/bin/lenso-cargo test -p lenso-runner --test replicated_lane_benchmark lane_scaling_benchmark -- --ignored --nocapture",
+  "results": [
+    {
+      "lanes": 1,
+      "throughput_per_second": 484.152,
+      "speedup": 1.000
+    },
+    {
+      "lanes": 2,
+      "throughput_per_second": 971.308,
+      "speedup": 2.006
+    },
+    {
+      "lanes": 4,
+      "throughput_per_second": 1925.816,
+      "speedup": 3.978
+    }
+  ]
+}
