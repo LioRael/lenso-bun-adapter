@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions: {}
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.2.21
+      - run: cargo fmt --all -- --check
+      - run: cargo check --locked --workspace --all-targets
+      - run: cargo test --locked --workspace
+      - name: Build Bun fixtures
+        run: |
+          bun build --target bun fixtures/bun/request-provider.ts --outdir /tmp/lenso-bun-fixtures
+          bun build --target bun fixtures/bun/request-consumer.ts --outdir /tmp/lenso-bun-fixtures
+          bun build --target bun fixtures/bun/wire-benchmark.ts --outdir /tmp/lenso-bun-fixtures
+      - name: Run cross-runtime conformance
+        run: cargo test --locked -p lenso-bun-adapter --test bun_cross_runtime -- --ignored --test-threads=1
