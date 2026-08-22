@@ -1,7 +1,7 @@
 import {
   decodeGreetResponse,
   encodeGreetRequest,
-} from "../../crates/lenso-capability-greeting/generated/bindings.ts";
+} from "./vendor/greeting.ts";
 
 const args = Bun.argv.slice(2);
 const argument = (name: string, fallback: string): string => {

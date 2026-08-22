@@ -1,7 +1,7 @@
 import {
   injectTraceContext,
   type WireExtension,
-} from "../../crates/lenso-otel-module/typescript/trace-context.ts";
+} from "./vendor/trace-context.ts";
 
 type EndpointDescriptor = {
   capability_id: string;

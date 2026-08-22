@@ -20,8 +20,8 @@ tokio.workspace = true
 [dev-dependencies]
 lenso-auth-sdk = "0.1.1"
 lenso-capability-auth = "0.1.1"
-lenso-capability-greeting = { git = "https://github.com/LioRael/lenso", rev = "67d21499548d07e92c2f6529d7c8345e58c067d9", version = "0.1.0" }
-lenso-capability-secure-greeting = { git = "https://github.com/LioRael/lenso", rev = "67d21499548d07e92c2f6529d7c8345e58c067d9", version = "0.1.0" }
+lenso-capability-greeting = { git = "https://github.com/LioRael/lenso-examples", rev = "f39d2d2900f71a39b3eda533908daa0a59d3d99b", version = "0.1.0" }
+lenso-capability-secure-greeting = { git = "https://github.com/LioRael/lenso-examples", rev = "f39d2d2900f71a39b3eda533908daa0a59d3d99b", version = "0.1.0" }
 lenso-native-adapter = "0.1.1"
 lenso-otel-module = "0.1.1"
 time.workspace = true

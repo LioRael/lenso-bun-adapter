@@ -763,7 +763,7 @@ dependencies = [
 [[package]]
 name = "lenso-capability-greeting"
 version = "0.1.0"
-source = "git+https://github.com/LioRael/lenso?rev=67d21499548d07e92c2f6529d7c8345e58c067d9#67d21499548d07e92c2f6529d7c8345e58c067d9"
+source = "git+https://github.com/LioRael/lenso-examples?rev=f39d2d2900f71a39b3eda533908daa0a59d3d99b#f39d2d2900f71a39b3eda533908daa0a59d3d99b"
 dependencies = [
  "futures",
  "lenso-contract-codegen",
@@ -775,7 +775,7 @@ dependencies = [
 [[package]]
 name = "lenso-capability-secure-greeting"
 version = "0.1.0"
-source = "git+https://github.com/LioRael/lenso?rev=67d21499548d07e92c2f6529d7c8345e58c067d9#67d21499548d07e92c2f6529d7c8345e58c067d9"
+source = "git+https://github.com/LioRael/lenso-examples?rev=f39d2d2900f71a39b3eda533908daa0a59d3d99b#f39d2d2900f71a39b3eda533908daa0a59d3d99b"
 dependencies = [
  "futures",
  "lenso-auth-sdk",

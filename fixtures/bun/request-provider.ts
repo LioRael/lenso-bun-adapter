@@ -2,17 +2,17 @@ import {
   decodeGreetRequest,
   encodeGreetError,
   encodeGreetResponse,
-} from "../../crates/lenso-capability-greeting/generated/bindings.ts";
+} from "./vendor/greeting.ts";
 import {
   decodeGreetRequest as decodeSecureGreetRequest,
   encodeGreetError as encodeSecureGreetError,
   encodeGreetResponse as encodeSecureGreetResponse,
-} from "../../crates/lenso-capability-secure-greeting/generated/bindings.ts";
+} from "./vendor/secure-greeting.ts";
 import {
   bindActor,
   type WireExtension,
-} from "../../crates/lenso-auth-sdk/typescript/actor.ts";
-import { extractTraceContext } from "../../crates/lenso-otel-module/typescript/trace-context.ts";
+} from "./vendor/actor.ts";
+import { extractTraceContext } from "./vendor/trace-context.ts";
 
 type EndpointDescriptor = {
   capability_id: string;
