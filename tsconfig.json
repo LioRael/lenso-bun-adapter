@@ -1,0 +1,18 @@
+{
+  "compilerOptions": {
+    "allowImportingTsExtensions": true,
+    "exactOptionalPropertyTypes": true,
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "noEmit": true,
+    "noUncheckedIndexedAccess": true,
+    "strict": true,
+    "target": "ES2022",
+    "types": ["bun"]
+  },
+  "include": [
+    "fixtures/bun/sdk-request-provider.ts",
+    "packages/lenso-bun-module/src/**/*.ts",
+    "packages/lenso-bun-module/test/**/*.ts"
+  ]
+}

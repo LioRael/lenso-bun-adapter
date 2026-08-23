@@ -1,0 +1,23 @@
+{
+  "name": "lenso-bun-adapter-workspace",
+  "private": true,
+  "type": "module",
+  "packageManager": "bun@1.2.21",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "bun run --filter '@lenso/bun-module' build",
+    "package-smoke": "bun run --filter '@lenso/bun-module' smoke",
+    "typecheck": "tsc -p tsconfig.json",
+    "test:typescript": "bun test packages/lenso-bun-module/test"
+  },
+  "dependencies": {
+    "@lenso/bun-module": "workspace:*",
+    "@lenso/contract-runtime": "0.1.0"
+  },
+  "devDependencies": {
+    "@types/bun": "1.4.0",
+    "typescript": "7.0.2"
+  }
+}
