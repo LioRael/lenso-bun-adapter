@@ -637,10 +637,17 @@ fn fixture(name: &str) -> PathBuf {
 }
 
 fn greeting_plan(script: &Path) -> lenso_app_plan::ResolvedAppPlan {
+    greeting_plan_with_consumer(script, script)
+}
+
+fn greeting_plan_with_consumer(
+    provider_script: &Path,
+    consumer_script: &Path,
+) -> lenso_app_plan::ResolvedAppPlan {
     let endpoint =
         CapabilityEndpointPlan::new(CAPABILITY_ID, DESCRIPTOR_VERSION, ["greet"]).with_limits(1, 1);
     let provider = ModuleInstancePlan::new("bun-provider", "fixture.bun.greeting")
-        .with_entrypoint(script.to_string_lossy())
+        .with_entrypoint(provider_script.to_string_lossy())
         .with_execution_class(ExecutionClassId::bun_child_process())
         .with_restart_policy(RestartPolicy::on_failure(
             2,
@@ -651,7 +658,7 @@ fn greeting_plan(script: &Path) -> lenso_app_plan::ResolvedAppPlan {
         ))
         .with_capability(endpoint);
     let consumer = ModuleInstancePlan::new("bun-consumer", "fixture.bun.consumer")
-        .with_entrypoint(script.to_string_lossy())
+        .with_entrypoint(consumer_script.to_string_lossy())
         .with_execution_class(ExecutionClassId::bun_child_process())
         .with_requirement(CapabilityRequirementPlan::one(
             CAPABILITY_ID,
@@ -778,11 +785,15 @@ fn run_greeting(
     wire: BunWire,
     name: &str,
 ) -> Result<Result<GreetResponse, GreetError>, RuntimeFailure> {
-    let script = fixture("request-provider.ts");
+    let provider_script = fixture(match wire {
+        BunWire::JsonRpcHttp => "sdk-request-provider.ts",
+        BunWire::FramedStdio => "request-provider.ts",
+    });
+    let consumer_script = fixture("request-provider.ts");
     let driver = DeterministicDriver::new();
     let adapter = BunAdapter::new(bun_binary(), wire).with_codec(GreetingCodec);
     let app = driver.run(Kernel::start(
-        greeting_plan(&script),
+        greeting_plan_with_consumer(&provider_script, &consumer_script),
         driver.clone(),
         ExecutionAdapterCatalog::single(adapter),
     ))?;

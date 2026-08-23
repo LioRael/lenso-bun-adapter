@@ -1,0 +1,5 @@
+[workspace]
+release_always = false
+changelog_update = false
+git_tag_name = "{{ package }}-v{{ version }}"
+pr_labels = ["release"]
