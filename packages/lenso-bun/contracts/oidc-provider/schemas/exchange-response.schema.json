@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "access_token": {
+      "type": "string",
+      "x-lenso-sensitive": true
+    },
+    "token_type": {
+      "type": "string"
+    },
+    "expires_in": {
+      "type": "integer"
+    },
+    "id_token": {
+      "type": "string",
+      "x-lenso-sensitive": true
+    },
+    "scope": {
+      "type": "string"
+    },
+    "session_id": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "access_token",
+    "token_type",
+    "expires_in",
+    "id_token",
+    "scope",
+    "session_id"
+  ],
+  "additionalProperties": false
+}

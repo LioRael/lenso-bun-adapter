@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "oneOf": [
+    {
+      "const": "invalid_challenge"
+    },
+    {
+      "const": "invalid_code"
+    },
+    {
+      "const": "expired"
+    },
+    {
+      "const": "too_many_attempts"
+    },
+    {
+      "const": "disabled"
+    }
+  ]
+}

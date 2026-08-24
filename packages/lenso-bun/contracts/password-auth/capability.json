@@ -1,0 +1,22 @@
+{
+  "id": "lenso.auth.password@1",
+  "version": "1.0.0",
+  "portable": true,
+  "cross_lane_transfer": true,
+  "operations": [
+    {
+      "name": "register",
+      "interaction": "request",
+      "request_schema": "schemas/register-request.schema.json",
+      "response_schema": "schemas/register-response.schema.json",
+      "domain_error_schema": "schemas/register-error.schema.json"
+    },
+    {
+      "name": "login",
+      "interaction": "request",
+      "request_schema": "schemas/login-request.schema.json",
+      "response_schema": "schemas/login-response.schema.json",
+      "domain_error_schema": "schemas/login-error.schema.json"
+    }
+  ]
+}

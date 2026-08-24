@@ -1,0 +1,22 @@
+{
+  "id": "lenso.http.endpoint@1",
+  "version": "1.1.0",
+  "portable": true,
+  "cross_lane_transfer": true,
+  "operations": [
+    {
+      "name": "describe",
+      "interaction": "request",
+      "request_schema": "schemas/describe-request.schema.json",
+      "response_schema": "schemas/describe-response.schema.json",
+      "domain_error_schema": "schemas/describe-error.schema.json"
+    },
+    {
+      "name": "handle",
+      "interaction": "request",
+      "request_schema": "schemas/handle-request.schema.json",
+      "response_schema": "schemas/handle-response.schema.json",
+      "domain_error_schema": "schemas/handle-error.schema.json"
+    }
+  ]
+}

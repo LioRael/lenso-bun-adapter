@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "challenge_id": {
+      "type": "string"
+    },
+    "code": {
+      "type": "string",
+      "x-lenso-sensitive": true
+    },
+    "device_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "challenge_id",
+    "code",
+    "device_id"
+  ],
+  "additionalProperties": false
+}

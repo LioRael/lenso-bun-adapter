@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "oneOf": [
+    {
+      "const": "invalid_identifier"
+    },
+    {
+      "const": "weak_password"
+    },
+    {
+      "const": "identifier_taken"
+    },
+    {
+      "const": "disabled"
+    }
+  ]
+}

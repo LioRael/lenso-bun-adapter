@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "challenge_id": {
+      "type": "string"
+    },
+    "expires_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "resend_after": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "debug_code": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "x-lenso-sensitive": true
+    }
+  },
+  "required": [
+    "challenge_id",
+    "expires_at",
+    "resend_after",
+    "debug_code"
+  ],
+  "additionalProperties": false
+}

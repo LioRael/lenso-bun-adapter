@@ -1,0 +1,22 @@
+{
+  "id": "lenso.auth.oauth-flow@1",
+  "version": "1.0.0",
+  "portable": true,
+  "cross_lane_transfer": true,
+  "operations": [
+    {
+      "name": "create",
+      "interaction": "request",
+      "request_schema": "schemas/create-request.schema.json",
+      "response_schema": "schemas/create-response.schema.json",
+      "domain_error_schema": "schemas/create-error.schema.json"
+    },
+    {
+      "name": "consume",
+      "interaction": "request",
+      "request_schema": "schemas/consume-request.schema.json",
+      "response_schema": "schemas/consume-response.schema.json",
+      "domain_error_schema": "schemas/consume-error.schema.json"
+    }
+  ]
+}

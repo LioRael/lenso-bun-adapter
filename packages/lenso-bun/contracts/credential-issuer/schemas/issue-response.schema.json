@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": [
+    "session_id",
+    "credential",
+    "expires_at"
+  ],
+  "properties": {
+    "session_id": {
+      "type": "string"
+    },
+    "credential": {
+      "type": "string",
+      "x-lenso-sensitive": true
+    },
+    "expires_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  },
+  "additionalProperties": false
+}

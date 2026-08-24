@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": [
+    "credential"
+  ],
+  "properties": {
+    "credential": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "properties": {
+        "scheme": {
+          "type": "string"
+        },
+        "value": {
+          "type": "string",
+          "x-lenso-sensitive": true
+        }
+      },
+      "required": [
+        "scheme",
+        "value"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

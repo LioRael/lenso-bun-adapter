@@ -1,6 +1,6 @@
 {
   "name": "@lenso/bun",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "The supported Bun authoring SDK for Lenso Modules and official Capability projections.",
   "type": "module",
   "license": "MIT",
@@ -20,6 +20,11 @@
       "types": "./dist/capabilities/jobs.d.ts",
       "import": "./dist/capabilities/jobs.js",
       "default": "./dist/capabilities/jobs.js"
+    },
+    "./capabilities/*": {
+      "types": "./dist/capabilities/*.d.ts",
+      "import": "./dist/capabilities/*.js",
+      "default": "./dist/capabilities/*.js"
     }
   },
   "main": "./dist/index.js",
@@ -33,6 +38,8 @@
   ],
   "scripts": {
     "build": "node scripts/clean-dist.mjs && tsc -p tsconfig.build.json",
+    "capabilities:check": "node scripts/capabilities.mjs check",
+    "capabilities:sync": "node scripts/capabilities.mjs sync",
     "prepack": "bun run build",
     "smoke": "bun test test/package.test.ts",
     "test": "bun test test"

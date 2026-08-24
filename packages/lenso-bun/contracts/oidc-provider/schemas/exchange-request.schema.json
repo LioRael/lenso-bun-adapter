@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "grant_type": {
+      "type": "string"
+    },
+    "code": {
+      "type": "string",
+      "x-lenso-sensitive": true
+    },
+    "redirect_uri": {
+      "type": "string"
+    },
+    "client_id": {
+      "type": "string"
+    },
+    "code_verifier": {
+      "type": "string",
+      "x-lenso-sensitive": true
+    }
+  },
+  "required": [
+    "grant_type",
+    "code",
+    "redirect_uri",
+    "client_id",
+    "code_verifier"
+  ],
+  "additionalProperties": false
+}

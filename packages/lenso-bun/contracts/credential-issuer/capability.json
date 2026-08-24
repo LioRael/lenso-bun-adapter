@@ -1,0 +1,22 @@
+{
+  "id": "lenso.auth.credential-issuer@1",
+  "version": "1.0.0",
+  "portable": true,
+  "cross_lane_transfer": true,
+  "operations": [
+    {
+      "name": "issue",
+      "interaction": "request",
+      "request_schema": "schemas/issue-request.schema.json",
+      "response_schema": "schemas/issue-response.schema.json",
+      "domain_error_schema": "schemas/issue-error.schema.json"
+    },
+    {
+      "name": "revoke",
+      "interaction": "request",
+      "request_schema": "schemas/revoke-request.schema.json",
+      "response_schema": "schemas/revoke-response.schema.json",
+      "domain_error_schema": "schemas/revoke-error.schema.json"
+    }
+  ]
+}

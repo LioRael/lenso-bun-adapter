@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "oneOf": [
+    {
+      "const": "invalid_state"
+    },
+    {
+      "const": "expired"
+    },
+    {
+      "const": "provider_mismatch"
+    },
+    {
+      "const": "already_consumed"
+    }
+  ]
+}

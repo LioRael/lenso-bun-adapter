@@ -1,0 +1,29 @@
+{
+  "id": "lenso.auth.account-admin@1",
+  "version": "1.0.0",
+  "portable": true,
+  "cross_lane_transfer": true,
+  "operations": [
+    {
+      "name": "list_subjects",
+      "interaction": "request",
+      "request_schema": "schemas/list-subjects-request.schema.json",
+      "response_schema": "schemas/list-subjects-response.schema.json",
+      "domain_error_schema": "schemas/list-subjects-error.schema.json"
+    },
+    {
+      "name": "set_subject_status",
+      "interaction": "request",
+      "request_schema": "schemas/set-subject-status-request.schema.json",
+      "response_schema": "schemas/set-subject-status-response.schema.json",
+      "domain_error_schema": "schemas/set-subject-status-error.schema.json"
+    },
+    {
+      "name": "list_sessions",
+      "interaction": "request",
+      "request_schema": "schemas/list-sessions-request.schema.json",
+      "response_schema": "schemas/list-sessions-response.schema.json",
+      "domain_error_schema": "schemas/list-sessions-error.schema.json"
+    }
+  ]
+}

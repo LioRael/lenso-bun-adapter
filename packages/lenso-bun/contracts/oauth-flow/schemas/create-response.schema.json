@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "state": {
+      "type": "string",
+      "x-lenso-sensitive": true
+    },
+    "code_verifier": {
+      "type": "string",
+      "x-lenso-sensitive": true
+    },
+    "code_challenge": {
+      "type": "string"
+    },
+    "expires_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  },
+  "required": [
+    "state",
+    "code_verifier",
+    "code_challenge",
+    "expires_at"
+  ],
+  "additionalProperties": false
+}

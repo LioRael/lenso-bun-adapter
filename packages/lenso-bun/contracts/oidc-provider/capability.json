@@ -1,0 +1,36 @@
+{
+  "id": "lenso.auth.oidc-provider@1",
+  "version": "1.0.0",
+  "portable": true,
+  "cross_lane_transfer": true,
+  "operations": [
+    {
+      "name": "metadata",
+      "interaction": "request",
+      "request_schema": "schemas/empty-request.schema.json",
+      "response_schema": "schemas/metadata-response.schema.json",
+      "domain_error_schema": "schemas/read-error.schema.json"
+    },
+    {
+      "name": "jwks",
+      "interaction": "request",
+      "request_schema": "schemas/empty-request.schema.json",
+      "response_schema": "schemas/jwks-response.schema.json",
+      "domain_error_schema": "schemas/read-error.schema.json"
+    },
+    {
+      "name": "authorize",
+      "interaction": "request",
+      "request_schema": "schemas/authorize-request.schema.json",
+      "response_schema": "schemas/authorize-response.schema.json",
+      "domain_error_schema": "schemas/authorize-error.schema.json"
+    },
+    {
+      "name": "exchange",
+      "interaction": "request",
+      "request_schema": "schemas/exchange-request.schema.json",
+      "response_schema": "schemas/exchange-response.schema.json",
+      "domain_error_schema": "schemas/exchange-error.schema.json"
+    }
+  ]
+}

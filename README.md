@@ -50,6 +50,7 @@ cargo fmt --all -- --check
 cargo check --locked --workspace --all-targets
 cargo test --locked --workspace
 bun install --frozen-lockfile
+bun run --filter '@lenso/bun' capabilities:check
 bun run build
 bun run typecheck
 bun run test:typescript

@@ -1,0 +1,22 @@
+{
+  "id": "lenso.auth.federated@1",
+  "version": "1.0.0",
+  "portable": true,
+  "cross_lane_transfer": true,
+  "operations": [
+    {
+      "name": "start",
+      "interaction": "request",
+      "request_schema": "schemas/start-request.schema.json",
+      "response_schema": "schemas/start-response.schema.json",
+      "domain_error_schema": "schemas/start-error.schema.json"
+    },
+    {
+      "name": "complete",
+      "interaction": "request",
+      "request_schema": "schemas/complete-request.schema.json",
+      "response_schema": "schemas/complete-response.schema.json",
+      "domain_error_schema": "schemas/complete-error.schema.json"
+    }
+  ]
+}

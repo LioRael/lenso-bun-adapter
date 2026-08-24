@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": [
+    "subject",
+    "actor_kind",
+    "assurance",
+    "audience",
+    "claims",
+    "expires_at"
+  ],
+  "properties": {
+    "subject": {
+      "type": "string"
+    },
+    "actor_kind": {
+      "type": "string"
+    },
+    "assurance": {
+      "type": "string"
+    },
+    "audience": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "claims": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "expires_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  },
+  "additionalProperties": false
+}

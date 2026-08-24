@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "subject": {
+      "type": "string"
+    },
+    "device_id": {
+      "type": "string"
+    },
+    "trusted": {
+      "type": "boolean"
+    },
+    "primary": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "subject",
+    "device_id",
+    "trusted",
+    "primary"
+  ],
+  "additionalProperties": false
+}
