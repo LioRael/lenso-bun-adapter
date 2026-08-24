@@ -4,7 +4,20 @@
     "": {
       "name": "lenso-bun-adapter-workspace",
       "dependencies": {
+        "@lenso/bun": "workspace:*",
         "@lenso/bun-module": "workspace:*",
+        "@lenso/contract-runtime": "0.1.0",
+      },
+      "devDependencies": {
+        "@types/bun": "1.4.0",
+        "typescript": "7.0.2",
+      },
+    },
+    "packages/lenso-bun": {
+      "name": "@lenso/bun",
+      "version": "0.1.0",
+      "dependencies": {
+        "@lenso/bun-module": "0.1.0",
         "@lenso/contract-runtime": "0.1.0",
       },
       "devDependencies": {
@@ -25,6 +38,8 @@
     },
   },
   "packages": {
+    "@lenso/bun": ["@lenso/bun@workspace:packages/lenso-bun"],
+
     "@lenso/bun-module": ["@lenso/bun-module@workspace:packages/lenso-bun-module"],
 
     "@lenso/contract-runtime": ["@lenso/contract-runtime@0.1.0", "", {}, "sha512-+tz+mSXRWC5+ptKbCJqc2QX31SfYpmzel3B+VgKOviEtSDUeAKfFkSD/n+3iK9DztH3HuDpCSgKVPlD0rpSNyg=="],
