@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "oneOf": [
+    {
+      "const": "invalid_request"
+    },
+    {
+      "const": "destination_not_allowed"
+    },
+    {
+      "const": "request_too_large"
+    },
+    {
+      "const": "response_too_large"
+    },
+    {
+      "const": "timeout"
+    },
+    {
+      "const": "transport_failure"
+    }
+  ]
+}

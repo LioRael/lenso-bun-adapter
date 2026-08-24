@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": [
+    "identifier",
+    "password"
+  ],
+  "properties": {
+    "identifier": {
+      "type": "string"
+    },
+    "password": {
+      "type": "string",
+      "x-lenso-sensitive": true
+    }
+  },
+  "additionalProperties": false
+}

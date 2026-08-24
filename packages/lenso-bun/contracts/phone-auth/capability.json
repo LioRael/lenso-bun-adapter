@@ -1,0 +1,36 @@
+{
+  "id": "lenso.auth.phone@1",
+  "version": "1.0.0",
+  "portable": true,
+  "cross_lane_transfer": true,
+  "operations": [
+    {
+      "name": "start_otp",
+      "interaction": "request",
+      "request_schema": "schemas/start-otp-request.schema.json",
+      "response_schema": "schemas/start-otp-response.schema.json",
+      "domain_error_schema": "schemas/start-otp-error.schema.json"
+    },
+    {
+      "name": "verify_otp",
+      "interaction": "request",
+      "request_schema": "schemas/verify-otp-request.schema.json",
+      "response_schema": "schemas/session-response.schema.json",
+      "domain_error_schema": "schemas/verify-otp-error.schema.json"
+    },
+    {
+      "name": "set_password",
+      "interaction": "request",
+      "request_schema": "schemas/set-password-request.schema.json",
+      "response_schema": "schemas/set-password-response.schema.json",
+      "domain_error_schema": "schemas/set-password-error.schema.json"
+    },
+    {
+      "name": "password_login",
+      "interaction": "request",
+      "request_schema": "schemas/password-login-request.schema.json",
+      "response_schema": "schemas/session-response.schema.json",
+      "domain_error_schema": "schemas/password-login-error.schema.json"
+    }
+  ]
+}

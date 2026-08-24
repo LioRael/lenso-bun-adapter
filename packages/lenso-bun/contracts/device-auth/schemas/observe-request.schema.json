@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "subject": {
+      "type": "string"
+    },
+    "device_id": {
+      "type": "string"
+    },
+    "client_ip": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "user_agent": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "subject",
+    "device_id",
+    "client_ip",
+    "user_agent"
+  ],
+  "additionalProperties": false
+}

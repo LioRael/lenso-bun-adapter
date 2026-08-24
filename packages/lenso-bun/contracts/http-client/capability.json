@@ -1,0 +1,15 @@
+{
+  "id": "lenso.http.client@1",
+  "version": "1.0.1",
+  "portable": true,
+  "cross_lane_transfer": true,
+  "operations": [
+    {
+      "name": "send",
+      "interaction": "request",
+      "request_schema": "schemas/send-request.schema.json",
+      "response_schema": "schemas/send-response.schema.json",
+      "domain_error_schema": "schemas/send-error.schema.json"
+    }
+  ]
+}

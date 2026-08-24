@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "oneOf": [
+    {
+      "const": "invalid_device"
+    },
+    {
+      "const": "invalid_subject"
+    },
+    {
+      "const": "not_found"
+    }
+  ]
+}

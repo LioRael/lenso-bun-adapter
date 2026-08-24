@@ -1,0 +1,29 @@
+{
+  "id": "lenso.auth.device@1",
+  "version": "1.0.0",
+  "portable": true,
+  "cross_lane_transfer": true,
+  "operations": [
+    {
+      "name": "observe",
+      "interaction": "request",
+      "request_schema": "schemas/observe-request.schema.json",
+      "response_schema": "schemas/observe-response.schema.json",
+      "domain_error_schema": "schemas/observe-error.schema.json"
+    },
+    {
+      "name": "list",
+      "interaction": "request",
+      "request_schema": "schemas/list-request.schema.json",
+      "response_schema": "schemas/list-response.schema.json",
+      "domain_error_schema": "schemas/list-error.schema.json"
+    },
+    {
+      "name": "set_trust",
+      "interaction": "request",
+      "request_schema": "schemas/set-trust-request.schema.json",
+      "response_schema": "schemas/set-trust-response.schema.json",
+      "domain_error_schema": "schemas/set-trust-error.schema.json"
+    }
+  ]
+}

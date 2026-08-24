@@ -18,6 +18,8 @@ jobs:
         with:
           bun-version: 1.2.21
       - run: bun install --frozen-lockfile
+      - run: cargo install lenso-contract-codegen --version 0.5.2 --locked
+      - run: bun run --filter '@lenso/bun' capabilities:check
       - run: bun run build
       - run: bun run typecheck
       - run: bun run test:typescript

@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "code_verifier": {
+      "type": "string",
+      "x-lenso-sensitive": true
+    },
+    "return_to": {
+      "type": "string"
+    },
+    "expires_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  },
+  "required": [
+    "code_verifier",
+    "return_to",
+    "expires_at"
+  ],
+  "additionalProperties": false
+}

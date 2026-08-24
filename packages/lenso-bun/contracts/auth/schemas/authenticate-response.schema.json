@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": [
+    "kind",
+    "assertion"
+  ],
+  "properties": {
+    "kind": {
+      "enum": [
+        "absent",
+        "authenticated"
+      ]
+    },
+    "assertion": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "properties": {
+        "issuer": {
+          "type": "string"
+        },
+        "subject": {
+          "type": "string"
+        },
+        "actor_kind": {
+          "type": "string"
+        },
+        "assurance": {
+          "type": "string"
+        },
+        "audience": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "claims": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "issued_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "expires_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "parent_provenance": {
+          "type": "string"
+        },
+        "proof": {
+          "type": "string",
+          "x-lenso-sensitive": true
+        }
+      },
+      "required": [
+        "issuer",
+        "subject",
+        "actor_kind",
+        "assurance",
+        "audience",
+        "issued_at",
+        "expires_at",
+        "proof"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

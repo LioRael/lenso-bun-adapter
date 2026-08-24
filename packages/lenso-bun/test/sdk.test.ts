@@ -121,11 +121,17 @@ test("records the authoritative source of each generated Capability projection",
   const lock = await Bun.file(
     new URL("../capabilities.lock.json", import.meta.url),
   ).json();
+  expect(lock.schema_version).toBe(2);
+  expect(Object.keys(lock.capabilities)).toHaveLength(24);
   expect(lock.capabilities[CAPABILITY_ID]).toEqual({
     descriptor_version: DESCRIPTOR_VERSION,
     export: "./capabilities/jobs",
+    snapshot_descriptor: "contracts/jobs/capability.json",
+    source_descriptor: "crates/lenso-capability-jobs/capability.json",
     source_package: "lenso-capability-jobs",
     source_package_version: "0.1.0",
     source_repository: "https://github.com/LioRael/lenso-jobs-module",
+    source_revision: "e4f0e097bfbc46284fc4aa678029a79f2f46ada4",
+    typescript_projection: "src/capabilities/jobs.ts",
   });
 });

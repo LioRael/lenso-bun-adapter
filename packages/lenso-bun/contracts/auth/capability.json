@@ -1,0 +1,14 @@
+{
+  "id": "lenso.auth@1",
+  "version": "1.0.0",
+  "portable": true,
+  "operations": [
+    {
+      "name": "authenticate",
+      "interaction": "request",
+      "request_schema": "schemas/authenticate-request.schema.json",
+      "response_schema": "schemas/authenticate-response.schema.json",
+      "domain_error_schema": "schemas/authenticate-error.schema.json"
+    }
+  ]
+}

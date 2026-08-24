@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "code": {
+      "type": "string",
+      "x-lenso-sensitive": true
+    },
+    "state": {
+      "type": "string",
+      "x-lenso-sensitive": true
+    }
+  },
+  "required": [
+    "code",
+    "state"
+  ],
+  "additionalProperties": false
+}

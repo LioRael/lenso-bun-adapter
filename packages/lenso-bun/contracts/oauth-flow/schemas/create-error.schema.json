@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "oneOf": [
+    {
+      "const": "invalid_provider"
+    },
+    {
+      "const": "invalid_return_to"
+    },
+    {
+      "const": "invalid_expiry"
+    }
+  ]
+}

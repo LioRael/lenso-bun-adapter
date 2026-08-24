@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": [
+    "subject",
+    "status"
+  ],
+  "properties": {
+    "subject": {
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "active",
+        "disabled"
+      ]
+    }
+  },
+  "additionalProperties": false
+}

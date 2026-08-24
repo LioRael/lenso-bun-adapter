@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "devices": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "device_id": {
+            "type": "string"
+          },
+          "trusted": {
+            "type": "boolean"
+          },
+          "primary": {
+            "type": "boolean"
+          },
+          "last_seen_ip": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "last_seen_user_agent": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "device_id",
+          "trusted",
+          "primary",
+          "last_seen_ip",
+          "last_seen_user_agent",
+          "updated_at"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "devices"
+  ],
+  "additionalProperties": false
+}

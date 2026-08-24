@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "phone": {
+      "type": "string",
+      "x-lenso-sensitive": true
+    },
+    "purpose": {
+      "enum": [
+        "login",
+        "register"
+      ]
+    },
+    "client_ip": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "phone",
+    "purpose",
+    "client_ip"
+  ],
+  "additionalProperties": false
+}

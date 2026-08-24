@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": [
+    "provider",
+    "external_subject"
+  ],
+  "properties": {
+    "provider": {
+      "type": "string"
+    },
+    "external_subject": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false
+}

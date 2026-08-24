@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "oneOf": [
+    {
+      "const": "job_not_found"
+    },
+    {
+      "const": "unauthorized"
+    }
+  ]
+}

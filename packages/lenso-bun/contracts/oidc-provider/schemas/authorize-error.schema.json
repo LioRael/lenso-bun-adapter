@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "oneOf": [
+    {
+      "const": "forbidden"
+    },
+    {
+      "const": "invalid_request"
+    },
+    {
+      "const": "invalid_client"
+    },
+    {
+      "const": "invalid_redirect_uri"
+    },
+    {
+      "const": "invalid_scope"
+    },
+    {
+      "const": "invalid_pkce"
+    },
+    {
+      "const": "disabled_subject"
+    }
+  ]
+}

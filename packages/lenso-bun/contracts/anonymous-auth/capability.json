@@ -1,0 +1,15 @@
+{
+  "id": "lenso.auth.anonymous@1",
+  "version": "1.0.0",
+  "portable": true,
+  "cross_lane_transfer": true,
+  "operations": [
+    {
+      "name": "sign_in",
+      "interaction": "request",
+      "request_schema": "schemas/sign-in-request.schema.json",
+      "response_schema": "schemas/sign-in-response.schema.json",
+      "domain_error_schema": "schemas/sign-in-error.schema.json"
+    }
+  ]
+}

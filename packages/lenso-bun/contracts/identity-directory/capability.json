@@ -1,0 +1,22 @@
+{
+  "id": "lenso.identity.directory@1",
+  "version": "1.0.0",
+  "portable": true,
+  "cross_lane_transfer": true,
+  "operations": [
+    {
+      "name": "ensure_identity",
+      "interaction": "request",
+      "request_schema": "schemas/ensure-identity-request.schema.json",
+      "response_schema": "schemas/ensure-identity-response.schema.json",
+      "domain_error_schema": "schemas/ensure-identity-error.schema.json"
+    },
+    {
+      "name": "read_status",
+      "interaction": "request",
+      "request_schema": "schemas/read-status-request.schema.json",
+      "response_schema": "schemas/read-status-response.schema.json",
+      "domain_error_schema": "schemas/read-status-error.schema.json"
+    }
+  ]
+}

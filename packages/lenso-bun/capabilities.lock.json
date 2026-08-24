@@ -1,12 +1,269 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "capabilities": {
+    "lenso.agent.auth.openai-codex@1": {
+      "descriptor_version": "1.0.0",
+      "export": "./capabilities/agent-auth-openai-codex",
+      "source_package": "lenso-capability-agent-auth-openai-codex",
+      "source_package_version": "0.1.0",
+      "source_repository": "https://github.com/LioRael/lenso-agent-harness",
+      "source_revision": "299bcae89334ed3d0f566f7471f835328d2abe93",
+      "source_descriptor": "crates/lenso-capability-agent-auth-openai-codex/capability.json",
+      "snapshot_descriptor": "contracts/agent-auth-openai-codex/capability.json",
+      "typescript_projection": "src/capabilities/agent-auth-openai-codex.ts"
+    },
+    "lenso.agent.model@1": {
+      "descriptor_version": "1.1.0",
+      "export": "./capabilities/agent-model",
+      "source_package": "lenso-capability-agent-model",
+      "source_package_version": "0.1.0",
+      "source_repository": "https://github.com/LioRael/lenso-agent-harness",
+      "source_revision": "299bcae89334ed3d0f566f7471f835328d2abe93",
+      "source_descriptor": "crates/lenso-capability-agent-model/capability.json",
+      "snapshot_descriptor": "contracts/agent-model/capability.json",
+      "typescript_projection": "src/capabilities/agent-model.ts"
+    },
+    "lenso.agent.prompt-provider@1": {
+      "descriptor_version": "1.0.0",
+      "export": "./capabilities/agent-prompt-provider",
+      "source_package": "lenso-capability-agent-prompt-provider",
+      "source_package_version": "0.1.0",
+      "source_repository": "https://github.com/LioRael/lenso-agent-harness",
+      "source_revision": "299bcae89334ed3d0f566f7471f835328d2abe93",
+      "source_descriptor": "crates/lenso-capability-agent-prompt-provider/capability.json",
+      "snapshot_descriptor": "contracts/agent-prompt-provider/capability.json",
+      "typescript_projection": "src/capabilities/agent-prompt-provider.ts"
+    },
+    "lenso.agent.prompt@1": {
+      "descriptor_version": "1.0.0",
+      "export": "./capabilities/agent-prompt",
+      "source_package": "lenso-capability-agent-prompt",
+      "source_package_version": "0.1.0",
+      "source_repository": "https://github.com/LioRael/lenso-agent-harness",
+      "source_revision": "299bcae89334ed3d0f566f7471f835328d2abe93",
+      "source_descriptor": "crates/lenso-capability-agent-prompt/capability.json",
+      "snapshot_descriptor": "contracts/agent-prompt/capability.json",
+      "typescript_projection": "src/capabilities/agent-prompt.ts"
+    },
+    "lenso.agent.session@1": {
+      "descriptor_version": "1.1.0",
+      "export": "./capabilities/agent-session",
+      "source_package": "lenso-capability-agent-session",
+      "source_package_version": "0.1.0",
+      "source_repository": "https://github.com/LioRael/lenso-agent-harness",
+      "source_revision": "299bcae89334ed3d0f566f7471f835328d2abe93",
+      "source_descriptor": "crates/lenso-capability-agent-session/capability.json",
+      "snapshot_descriptor": "contracts/agent-session/capability.json",
+      "typescript_projection": "src/capabilities/agent-session.ts"
+    },
+    "lenso.agent.tool-provider@1": {
+      "descriptor_version": "1.0.0",
+      "export": "./capabilities/agent-tool-provider",
+      "source_package": "lenso-capability-agent-tool-provider",
+      "source_package_version": "0.1.0",
+      "source_repository": "https://github.com/LioRael/lenso-agent-harness",
+      "source_revision": "299bcae89334ed3d0f566f7471f835328d2abe93",
+      "source_descriptor": "crates/lenso-capability-agent-tool-provider/capability.json",
+      "snapshot_descriptor": "contracts/agent-tool-provider/capability.json",
+      "typescript_projection": "src/capabilities/agent-tool-provider.ts"
+    },
+    "lenso.agent.tools@1": {
+      "descriptor_version": "1.0.0",
+      "export": "./capabilities/agent-tools",
+      "source_package": "lenso-capability-agent-tools",
+      "source_package_version": "0.1.0",
+      "source_repository": "https://github.com/LioRael/lenso-agent-harness",
+      "source_revision": "299bcae89334ed3d0f566f7471f835328d2abe93",
+      "source_descriptor": "crates/lenso-capability-agent-tools/capability.json",
+      "snapshot_descriptor": "contracts/agent-tools/capability.json",
+      "typescript_projection": "src/capabilities/agent-tools.ts"
+    },
+    "lenso.agent@1": {
+      "descriptor_version": "1.1.0",
+      "export": "./capabilities/agent",
+      "source_package": "lenso-capability-agent",
+      "source_package_version": "0.1.0",
+      "source_repository": "https://github.com/LioRael/lenso-agent-harness",
+      "source_revision": "299bcae89334ed3d0f566f7471f835328d2abe93",
+      "source_descriptor": "crates/lenso-capability-agent/capability.json",
+      "snapshot_descriptor": "contracts/agent/capability.json",
+      "typescript_projection": "src/capabilities/agent.ts"
+    },
+    "lenso.auth.account-admin@1": {
+      "descriptor_version": "1.0.0",
+      "export": "./capabilities/account-admin",
+      "source_package": "lenso-capability-account-admin",
+      "source_package_version": "0.1.0",
+      "source_repository": "https://github.com/LioRael/lenso-auth-module",
+      "source_revision": "aa273af688b1755287c585bcaba343f7d9ed9e64",
+      "source_descriptor": "crates/lenso-capability-account-admin/capability.json",
+      "snapshot_descriptor": "contracts/account-admin/capability.json",
+      "typescript_projection": "src/capabilities/account-admin.ts"
+    },
+    "lenso.auth.anonymous@1": {
+      "descriptor_version": "1.0.0",
+      "export": "./capabilities/anonymous-auth",
+      "source_package": "lenso-capability-anonymous-auth",
+      "source_package_version": "0.1.0",
+      "source_repository": "https://github.com/LioRael/lenso-auth-module",
+      "source_revision": "aa273af688b1755287c585bcaba343f7d9ed9e64",
+      "source_descriptor": "crates/lenso-capability-anonymous-auth/capability.json",
+      "snapshot_descriptor": "contracts/anonymous-auth/capability.json",
+      "typescript_projection": "src/capabilities/anonymous-auth.ts"
+    },
+    "lenso.auth.credential-issuer@1": {
+      "descriptor_version": "1.0.0",
+      "export": "./capabilities/credential-issuer",
+      "source_package": "lenso-capability-credential-issuer",
+      "source_package_version": "0.1.0",
+      "source_repository": "https://github.com/LioRael/lenso-auth-module",
+      "source_revision": "aa273af688b1755287c585bcaba343f7d9ed9e64",
+      "source_descriptor": "crates/lenso-capability-credential-issuer/capability.json",
+      "snapshot_descriptor": "contracts/credential-issuer/capability.json",
+      "typescript_projection": "src/capabilities/credential-issuer.ts"
+    },
+    "lenso.auth.device@1": {
+      "descriptor_version": "1.0.0",
+      "export": "./capabilities/device-auth",
+      "source_package": "lenso-capability-device-auth",
+      "source_package_version": "0.1.0",
+      "source_repository": "https://github.com/LioRael/lenso-auth-module",
+      "source_revision": "aa273af688b1755287c585bcaba343f7d9ed9e64",
+      "source_descriptor": "crates/lenso-capability-device-auth/capability.json",
+      "snapshot_descriptor": "contracts/device-auth/capability.json",
+      "typescript_projection": "src/capabilities/device-auth.ts"
+    },
+    "lenso.auth.federated@1": {
+      "descriptor_version": "1.0.0",
+      "export": "./capabilities/federated-auth",
+      "source_package": "lenso-capability-federated-auth",
+      "source_package_version": "0.1.0",
+      "source_repository": "https://github.com/LioRael/lenso-auth-module",
+      "source_revision": "aa273af688b1755287c585bcaba343f7d9ed9e64",
+      "source_descriptor": "crates/lenso-capability-federated-auth/capability.json",
+      "snapshot_descriptor": "contracts/federated-auth/capability.json",
+      "typescript_projection": "src/capabilities/federated-auth.ts"
+    },
+    "lenso.auth.oauth-flow@1": {
+      "descriptor_version": "1.0.0",
+      "export": "./capabilities/oauth-flow",
+      "source_package": "lenso-capability-oauth-flow",
+      "source_package_version": "0.1.0",
+      "source_repository": "https://github.com/LioRael/lenso-auth-module",
+      "source_revision": "aa273af688b1755287c585bcaba343f7d9ed9e64",
+      "source_descriptor": "crates/lenso-capability-oauth-flow/capability.json",
+      "snapshot_descriptor": "contracts/oauth-flow/capability.json",
+      "typescript_projection": "src/capabilities/oauth-flow.ts"
+    },
+    "lenso.auth.oidc-provider@1": {
+      "descriptor_version": "1.0.0",
+      "export": "./capabilities/oidc-provider",
+      "source_package": "lenso-capability-oidc-provider",
+      "source_package_version": "0.1.0",
+      "source_repository": "https://github.com/LioRael/lenso-auth-module",
+      "source_revision": "aa273af688b1755287c585bcaba343f7d9ed9e64",
+      "source_descriptor": "crates/lenso-capability-oidc-provider/capability.json",
+      "snapshot_descriptor": "contracts/oidc-provider/capability.json",
+      "typescript_projection": "src/capabilities/oidc-provider.ts"
+    },
+    "lenso.auth.password@1": {
+      "descriptor_version": "1.0.0",
+      "export": "./capabilities/password-auth",
+      "source_package": "lenso-capability-password-auth",
+      "source_package_version": "0.1.0",
+      "source_repository": "https://github.com/LioRael/lenso-auth-module",
+      "source_revision": "aa273af688b1755287c585bcaba343f7d9ed9e64",
+      "source_descriptor": "crates/lenso-capability-password-auth/capability.json",
+      "snapshot_descriptor": "contracts/password-auth/capability.json",
+      "typescript_projection": "src/capabilities/password-auth.ts"
+    },
+    "lenso.auth.phone@1": {
+      "descriptor_version": "1.0.0",
+      "export": "./capabilities/phone-auth",
+      "source_package": "lenso-capability-phone-auth",
+      "source_package_version": "0.1.0",
+      "source_repository": "https://github.com/LioRael/lenso-auth-module",
+      "source_revision": "aa273af688b1755287c585bcaba343f7d9ed9e64",
+      "source_descriptor": "crates/lenso-capability-phone-auth/capability.json",
+      "snapshot_descriptor": "contracts/phone-auth/capability.json",
+      "typescript_projection": "src/capabilities/phone-auth.ts"
+    },
+    "lenso.auth@1": {
+      "descriptor_version": "1.0.0",
+      "export": "./capabilities/auth",
+      "source_package": "lenso-capability-auth",
+      "source_package_version": "0.1.1",
+      "source_repository": "https://github.com/LioRael/lenso-auth-module",
+      "source_revision": "aa273af688b1755287c585bcaba343f7d9ed9e64",
+      "source_descriptor": "crates/lenso-capability-auth/capability.json",
+      "snapshot_descriptor": "contracts/auth/capability.json",
+      "typescript_projection": "src/capabilities/auth.ts"
+    },
+    "lenso.http.client@1": {
+      "descriptor_version": "1.0.1",
+      "export": "./capabilities/http-client",
+      "source_package": "lenso-capability-http-client",
+      "source_package_version": "0.2.2",
+      "source_repository": "https://github.com/LioRael/lenso-web",
+      "source_revision": "199921cc3e0471d481b4a4488219bcc3de1f17eb",
+      "source_descriptor": "crates/lenso-capability-http-client/capability.json",
+      "snapshot_descriptor": "contracts/http-client/capability.json",
+      "typescript_projection": "src/capabilities/http-client.ts"
+    },
+    "lenso.http.endpoint@1": {
+      "descriptor_version": "1.1.0",
+      "export": "./capabilities/http-endpoint",
+      "source_package": "lenso-capability-http-endpoint",
+      "source_package_version": "0.2.5",
+      "source_repository": "https://github.com/LioRael/lenso-web",
+      "source_revision": "199921cc3e0471d481b4a4488219bcc3de1f17eb",
+      "source_descriptor": "crates/lenso-capability-http-endpoint/capability.json",
+      "snapshot_descriptor": "contracts/http-endpoint/capability.json",
+      "typescript_projection": "src/capabilities/http-endpoint.ts"
+    },
+    "lenso.identity.directory@1": {
+      "descriptor_version": "1.0.0",
+      "export": "./capabilities/identity-directory",
+      "source_package": "lenso-capability-identity-directory",
+      "source_package_version": "0.1.0",
+      "source_repository": "https://github.com/LioRael/lenso-auth-module",
+      "source_revision": "aa273af688b1755287c585bcaba343f7d9ed9e64",
+      "source_descriptor": "crates/lenso-capability-identity-directory/capability.json",
+      "snapshot_descriptor": "contracts/identity-directory/capability.json",
+      "typescript_projection": "src/capabilities/identity-directory.ts"
+    },
     "lenso.jobs@1": {
       "descriptor_version": "1.0.0",
       "export": "./capabilities/jobs",
       "source_package": "lenso-capability-jobs",
       "source_package_version": "0.1.0",
-      "source_repository": "https://github.com/LioRael/lenso-jobs-module"
+      "source_repository": "https://github.com/LioRael/lenso-jobs-module",
+      "source_revision": "e4f0e097bfbc46284fc4aa678029a79f2f46ada4",
+      "source_descriptor": "crates/lenso-capability-jobs/capability.json",
+      "snapshot_descriptor": "contracts/jobs/capability.json",
+      "typescript_projection": "src/capabilities/jobs.ts"
+    },
+    "lenso.message.sms@1": {
+      "descriptor_version": "1.0.0",
+      "export": "./capabilities/sms-delivery",
+      "source_package": "lenso-capability-sms-delivery",
+      "source_package_version": "0.1.0",
+      "source_repository": "https://github.com/LioRael/lenso-auth-module",
+      "source_revision": "aa273af688b1755287c585bcaba343f7d9ed9e64",
+      "source_descriptor": "crates/lenso-capability-sms-delivery/capability.json",
+      "snapshot_descriptor": "contracts/sms-delivery/capability.json",
+      "typescript_projection": "src/capabilities/sms-delivery.ts"
+    },
+    "lenso.secrets@1": {
+      "descriptor_version": "1.0.0",
+      "export": "./capabilities/secrets",
+      "source_package": "lenso-capability-secrets",
+      "source_package_version": "0.1.0",
+      "source_repository": "https://github.com/LioRael/lenso-secrets-module",
+      "source_revision": "8fcef31d2f27b3b1bb8785855613b14e273a3e96",
+      "source_descriptor": "crates/lenso-capability-secrets/capability.json",
+      "snapshot_descriptor": "contracts/secrets/capability.json",
+      "typescript_projection": "src/capabilities/secrets.ts"
     }
   }
 }
