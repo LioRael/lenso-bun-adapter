@@ -1,9 +1,12 @@
-# Lenso Bun Runtime
+# Lenso Bun SDK and Runtime
 
 The Bun authoring and execution surface for Lenso vNext Modules:
 
+- `@lenso/bun` is the supported authoring SDK. It combines the runtime with
+  directly consumable projections of official portable Capabilities.
 - `@lenso/bun-module` lets authors register generated, typed Capability
-  Providers without implementing the wire protocol.
+  Providers without implementing the wire protocol. It remains the low-level
+  runtime package behind the SDK.
 - `lenso-bun-adapter` owns the child-process mechanics used by a Rust Host.
 - the cross-runtime fixtures prove the generated TypeScript contract against
   the Rust Kernel and preserve low-level wire conformance coverage.
@@ -13,27 +16,23 @@ semantics or product Modules.
 
 ## Author a Bun Module
 
-Generate TypeScript bindings from a Capability descriptor, implement the
-generated Provider interface, and hand its binding to the runtime:
+Install one SDK, implement an official generated Provider interface, and hand
+its binding to the runtime:
+
+```sh
+bun add @lenso/bun
+```
 
 ```ts
-import { defineModule, serve } from "@lenso/bun-module";
-import {
-  bindGreetingProvider,
-  type GreetingProvider,
-} from "./generated/greeting.ts";
+import { defineModule, serve } from "@lenso/bun";
+import { bindJobsProvider } from "@lenso/bun/capabilities/jobs";
+import { jobs } from "./jobs.ts"; // Implements JobsProvider.
 
-const greeting: GreetingProvider = {
-  async greet(_context, request) {
-    return {
-      ok: true,
-      value: { message: `Hello, ${request.name}!` },
-    };
-  },
-};
-
-serve(defineModule({ providers: [bindGreetingProvider(greeting)] }));
+serve(defineModule({ providers: [bindJobsProvider(jobs)] }));
 ```
+
+Custom Capability contracts can still be generated during authoring. Official
+Capability projections belong in `@lenso/bun`, not beside Rust crate source.
 
 The first public SDK release supports request Capabilities over the production
 JSON-RPC loopback wire. Stream and Event descriptors fail closed until their
@@ -55,6 +54,7 @@ bun run build
 bun run typecheck
 bun run test:typescript
 bun run package-smoke
+npm pack --dry-run ./packages/lenso-bun
 npm pack --dry-run ./packages/lenso-bun-module
 bun build --target bun fixtures/bun/sdk-request-provider.ts --outdir /tmp/lenso-bun-fixtures
 cargo test --locked -p lenso-bun-adapter --test bun_cross_runtime -- --ignored --test-threads=1
