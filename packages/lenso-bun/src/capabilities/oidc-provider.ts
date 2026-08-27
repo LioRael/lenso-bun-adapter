@@ -186,7 +186,7 @@ export function bindOidcProviderProvider(
           }
           return { kind: "runtime", failure: result.error.error };
         } catch (error) {
-          return { kind: "runtime", failure: { kind: "module_failure", detail: providerErrorMessage(error) } };
+          return { kind: "runtime", failure: { kind: "plugin_failure", detail: providerErrorMessage(error) } };
         }
       }
       case "exchange": {
@@ -206,7 +206,7 @@ export function bindOidcProviderProvider(
           }
           return { kind: "runtime", failure: result.error.error };
         } catch (error) {
-          return { kind: "runtime", failure: { kind: "module_failure", detail: providerErrorMessage(error) } };
+          return { kind: "runtime", failure: { kind: "plugin_failure", detail: providerErrorMessage(error) } };
         }
       }
       case "jwks": {
@@ -226,7 +226,7 @@ export function bindOidcProviderProvider(
           }
           return { kind: "runtime", failure: result.error.error };
         } catch (error) {
-          return { kind: "runtime", failure: { kind: "module_failure", detail: providerErrorMessage(error) } };
+          return { kind: "runtime", failure: { kind: "plugin_failure", detail: providerErrorMessage(error) } };
         }
       }
       case "metadata": {
@@ -246,7 +246,7 @@ export function bindOidcProviderProvider(
           }
           return { kind: "runtime", failure: result.error.error };
         } catch (error) {
-          return { kind: "runtime", failure: { kind: "module_failure", detail: providerErrorMessage(error) } };
+          return { kind: "runtime", failure: { kind: "plugin_failure", detail: providerErrorMessage(error) } };
         }
       }
         default:

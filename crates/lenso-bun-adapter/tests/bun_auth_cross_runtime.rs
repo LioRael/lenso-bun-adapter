@@ -8,7 +8,7 @@ use std::{
 use futures::future::LocalBoxFuture;
 use lenso_app_plan::{
     AppComposition, CapabilityBinding, CapabilityEndpointPlan, CapabilityRequirementPlan,
-    ExecutionClassId, ModuleInstancePlan,
+    ExecutionClassId, PluginInstancePlan,
 };
 use lenso_auth_sdk::{
     ActorAssertionIssuer, AuthOutcome, CredentialEvidence, Validity, audience,
@@ -27,7 +27,7 @@ use lenso_kernel::{
     CancellationToken, DeterministicDriver, ExecutionAdapterCatalog, Kernel, RuntimeFailure,
 };
 use lenso_native_adapter::{
-    NativeModuleFactory, NativeModuleFactoryContext, NativeModuleInstance, NativeModuleRegistry,
+    NativePluginFactory, NativePluginFactoryContext, NativePluginInstance, NativePluginRegistry,
 };
 use time::{Duration, OffsetDateTime};
 
@@ -166,21 +166,21 @@ struct NativeFactory {
     auth: NativeAuthProvider,
 }
 
-impl NativeModuleFactory for NativeFactory {
+impl NativePluginFactory for NativeFactory {
     fn package_id(&self) -> &'static str {
         self.package
     }
 
     fn instantiate(
         &self,
-        _context: NativeModuleFactoryContext<'_>,
-    ) -> Result<NativeModuleInstance, RuntimeFailure> {
+        _context: NativePluginFactoryContext<'_>,
+    ) -> Result<NativePluginInstance, RuntimeFailure> {
         let endpoints: Vec<Rc<dyn lenso_kernel::NativeRequestEndpoint>> = match self.package {
             "fixture.auth" => vec![Rc::new(AuthEndpoint::new(self.auth.clone()))],
             "fixture.ingress" => Vec::new(),
             _ => unreachable!("factory package is fixed"),
         };
-        Ok(NativeModuleInstance::new(endpoints))
+        Ok(NativePluginInstance::new(endpoints))
     }
 }
 
@@ -204,16 +204,16 @@ fn fixture() -> PathBuf {
 }
 
 fn plan() -> lenso_app_plan::ResolvedAppPlan {
-    let ingress = ModuleInstancePlan::new("ingress", "fixture.ingress")
+    let ingress = PluginInstancePlan::new("ingress", "fixture.ingress")
         .with_requirement(CapabilityRequirementPlan::one(AUTH_ID, AUTH_VERSION))
         .with_requirement(CapabilityRequirementPlan::one(
             CAPABILITY_ID,
             DESCRIPTOR_VERSION,
         ));
-    let auth = ModuleInstancePlan::new("auth", "fixture.auth").with_capability(
+    let auth = PluginInstancePlan::new("auth", "fixture.auth").with_capability(
         CapabilityEndpointPlan::new(AUTH_ID, AUTH_VERSION, [AUTHENTICATE_OPERATION]),
     );
-    let target = ModuleInstancePlan::new("target", "fixture.bun.secure-greeting")
+    let target = PluginInstancePlan::new("target", "fixture.bun.secure-greeting")
         .with_entrypoint(fixture().to_string_lossy())
         .with_execution_class(ExecutionClassId::bun_child_process())
         .with_capability(CapabilityEndpointPlan::new(
@@ -238,7 +238,7 @@ fn run(
 ) -> Result<Result<GreetResponse, GreetError>, RuntimeFailure> {
     let issuer = ActorAssertionIssuer::new("auth.users", b"shared-auth-key");
     let auth = NativeAuthProvider { issuer };
-    let native = NativeModuleRegistry::new()
+    let native = NativePluginRegistry::new()
         .with_factory(NativeFactory {
             package: "fixture.ingress",
             auth: auth.clone(),

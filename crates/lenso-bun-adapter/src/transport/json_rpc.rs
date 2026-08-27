@@ -490,7 +490,7 @@ impl JsonRpcTransport {
                 let error =
                     self.process
                         .failure_or_exit()
-                        .unwrap_or(RuntimeFailure::ModuleFailure {
+                        .unwrap_or(RuntimeFailure::PluginFailure {
                             detail: "Bun JSON-RPC stream worker stopped".to_owned(),
                         });
                 self.process.mark_dead(error.clone());
@@ -664,7 +664,7 @@ impl JsonRpcTransport {
                 let error =
                     self.process
                         .failure_or_exit()
-                        .unwrap_or(RuntimeFailure::ModuleFailure {
+                        .unwrap_or(RuntimeFailure::PluginFailure {
                             detail: "Bun JSON-RPC worker stopped".to_owned(),
                         });
                 self.process.mark_dead(error.clone());
@@ -697,7 +697,7 @@ impl JsonRpcTransport {
                 });
             remember_request_id(&self.retired, request_id);
             if self.cancel_sender.try_send(request_id).is_err() {
-                self.process.mark_dead(RuntimeFailure::ModuleFailure {
+                self.process.mark_dead(RuntimeFailure::PluginFailure {
                     detail: "Bun JSON-RPC cancellation channel stopped".to_owned(),
                 });
             }
@@ -731,7 +731,7 @@ impl JsonRpcTransport {
                 })
                 .is_err()
         {
-            self.process.mark_dead(RuntimeFailure::ModuleFailure {
+            self.process.mark_dead(RuntimeFailure::PluginFailure {
                 detail: "Bun JSON-RPC stream cancellation channel stopped".to_owned(),
             });
         }

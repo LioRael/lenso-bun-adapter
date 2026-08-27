@@ -31,17 +31,17 @@ export interface CapabilityProviderBinding {
   ): Promise<ProviderDispatchOutcome>;
 }
 
-export interface BunModuleOptions {
+export interface BunPluginOptions {
   readonly providers: ReadonlyArray<CapabilityProviderBinding>;
   readonly maxConcurrentRequests?: number;
 }
 
-export interface BunModuleDefinition {
+export interface BunPluginDefinition {
   readonly providers: ReadonlyArray<CapabilityProviderBinding>;
   readonly maxConcurrentRequests: number;
 }
 
-export interface StartModuleOptions {
+export interface StartPluginOptions {
   readonly hostname?: string;
   readonly port?: number;
   readonly maxFrameBytes?: number;
@@ -50,7 +50,7 @@ export interface StartModuleOptions {
   readonly announceReady?: boolean;
 }
 
-export interface BunModuleServer {
+export interface BunPluginServer {
   readonly port: number;
   stop(closeActiveConnections?: boolean): void;
 }
@@ -94,9 +94,9 @@ interface JsonRpcEnvelope {
   readonly params?: unknown;
 }
 
-export function defineModule(options: BunModuleOptions): BunModuleDefinition {
+export function definePlugin(options: BunPluginOptions): BunPluginDefinition {
   if (options.providers.length === 0) {
-    throw new Error("a Bun Module must register at least one Capability Provider");
+    throw new Error("a Bun Plugin must register at least one Capability Provider");
   }
   const seen = new Set<string>();
   for (const provider of options.providers) {
@@ -112,7 +112,7 @@ export function defineModule(options: BunModuleOptions): BunModuleDefinition {
       provider.descriptor.event_operations.length > 0
     ) {
       throw new Error(
-        `@lenso/bun-module 0.1 supports request Capabilities only; ${provider.descriptor.capability_id} declares Stream or Event Operations`,
+        `@lenso/bun-plugin 0.1 supports request Capabilities only; ${provider.descriptor.capability_id} declares Stream or Event Operations`,
       );
     }
   }
@@ -127,12 +127,12 @@ export function defineModule(options: BunModuleOptions): BunModuleDefinition {
   });
 }
 
-export function serve(definition: BunModuleDefinition): BunModuleServer {
+export function serve(definition: BunPluginDefinition): BunPluginServer {
   const arguments_ = Bun.argv.slice(2);
   const transport = argument(arguments_, "--lenso-transport", "json-rpc-http");
   if (transport !== "json-rpc-http") {
     throw new Error(
-      `@lenso/bun-module supports the production json-rpc-http wire, received ${transport}`,
+      `@lenso/bun-plugin supports the production json-rpc-http wire, received ${transport}`,
     );
   }
   const maxFrameBytes = numericArgument(
@@ -146,7 +146,7 @@ export function serve(definition: BunModuleDefinition): BunModuleServer {
     "--lenso-endpoints-json",
     definition.providers.map(({ descriptor }) => descriptor),
   );
-  return startModule(definition, {
+  return startPlugin(definition, {
     announceReady: true,
     expectedEndpoints,
     maxFrameBytes,
@@ -154,10 +154,10 @@ export function serve(definition: BunModuleDefinition): BunModuleServer {
   });
 }
 
-export function startModule(
-  definition: BunModuleDefinition,
-  options: StartModuleOptions = {},
-): BunModuleServer {
+export function startPlugin(
+  definition: BunPluginDefinition,
+  options: StartPluginOptions = {},
+): BunPluginServer {
   const maxFrameBytes = options.maxFrameBytes ?? DEFAULT_MAX_FRAME_BYTES;
   const maxRetiredRequestIds =
     options.maxRetiredRequestIds ?? DEFAULT_MAX_RETIRED_REQUEST_IDS;
@@ -335,7 +335,7 @@ export function startModule(
       } catch (error) {
         outcome = {
           kind: "runtime",
-          failure: { kind: "module_failure", detail: errorMessage(error) },
+          failure: { kind: "plugin_failure", detail: errorMessage(error) },
         };
       } finally {
         if (timeout !== undefined) clearTimeout(timeout);
@@ -348,7 +348,7 @@ export function startModule(
 
   if (server.port === undefined) {
     server.stop(true);
-    throw new Error("Bun Module server did not bind a TCP port");
+    throw new Error("Bun Plugin server did not bind a TCP port");
   }
   if (options.announceReady ?? false) {
     console.log(`LENSO_READY ${server.port}`);

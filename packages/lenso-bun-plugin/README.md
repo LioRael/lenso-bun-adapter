@@ -1,4 +1,4 @@
-# @lenso/bun-module
+# @lenso/bun-plugin
 
 Author a Lenso vNext Module in Bun without implementing the Execution Adapter
 wire protocol. Generated Capability bindings provide typed Provider interfaces
@@ -6,7 +6,7 @@ and `bind*Provider` functions; this package owns the Bun process handshake,
 bounded JSON-RPC server, cancellation, shutdown, and Runtime Failure mapping.
 
 ```ts
-import { defineModule, serve } from "@lenso/bun-module";
+import { definePlugin, serve } from "@lenso/bun-plugin";
 import {
   bindGreetingProvider,
   type GreetingProvider,
@@ -21,7 +21,7 @@ const provider: GreetingProvider = {
   },
 };
 
-serve(defineModule({ providers: [bindGreetingProvider(provider)] }));
+serve(definePlugin({ providers: [bindGreetingProvider(provider)] }));
 ```
 
 The initial public surface supports request Capabilities over the production

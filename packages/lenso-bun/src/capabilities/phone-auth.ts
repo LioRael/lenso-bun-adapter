@@ -179,7 +179,7 @@ export function bindPhoneProvider(
           }
           return { kind: "runtime", failure: result.error.error };
         } catch (error) {
-          return { kind: "runtime", failure: { kind: "module_failure", detail: providerErrorMessage(error) } };
+          return { kind: "runtime", failure: { kind: "plugin_failure", detail: providerErrorMessage(error) } };
         }
       }
       case "set_password": {
@@ -199,7 +199,7 @@ export function bindPhoneProvider(
           }
           return { kind: "runtime", failure: result.error.error };
         } catch (error) {
-          return { kind: "runtime", failure: { kind: "module_failure", detail: providerErrorMessage(error) } };
+          return { kind: "runtime", failure: { kind: "plugin_failure", detail: providerErrorMessage(error) } };
         }
       }
       case "start_otp": {
@@ -219,7 +219,7 @@ export function bindPhoneProvider(
           }
           return { kind: "runtime", failure: result.error.error };
         } catch (error) {
-          return { kind: "runtime", failure: { kind: "module_failure", detail: providerErrorMessage(error) } };
+          return { kind: "runtime", failure: { kind: "plugin_failure", detail: providerErrorMessage(error) } };
         }
       }
       case "verify_otp": {
@@ -239,7 +239,7 @@ export function bindPhoneProvider(
           }
           return { kind: "runtime", failure: result.error.error };
         } catch (error) {
-          return { kind: "runtime", failure: { kind: "module_failure", detail: providerErrorMessage(error) } };
+          return { kind: "runtime", failure: { kind: "plugin_failure", detail: providerErrorMessage(error) } };
         }
       }
         default:

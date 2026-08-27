@@ -67,7 +67,7 @@ pub(crate) fn open_framed(
             result?
         } else {
             process.stop();
-            return Err(RuntimeFailure::ModuleFailure {
+            return Err(RuntimeFailure::PluginFailure {
                 detail: "Bun framed-stdio handshake timed out".to_owned(),
             });
         };
@@ -148,7 +148,7 @@ fn spawn_framed_writer(
                     },
                 };
                 if let Err(error) = stdin.write_all(&frame).and_then(|()| stdin.flush()) {
-                    process.mark_dead(RuntimeFailure::ModuleFailure {
+                    process.mark_dead(RuntimeFailure::PluginFailure {
                         detail: format!("Bun framed-stdio write failed: {error}"),
                     });
                     break;
@@ -356,7 +356,7 @@ impl FramedTransport {
                 let error =
                     self.process
                         .failure_or_exit()
-                        .unwrap_or(RuntimeFailure::ModuleFailure {
+                        .unwrap_or(RuntimeFailure::PluginFailure {
                             detail: "Bun framed-stdio writer stopped".to_owned(),
                         });
                 self.process.mark_dead(error.clone());
@@ -443,7 +443,7 @@ impl FramedTransport {
                 let error =
                     self.process
                         .failure_or_exit()
-                        .unwrap_or(RuntimeFailure::ModuleFailure {
+                        .unwrap_or(RuntimeFailure::PluginFailure {
                             detail: "Bun framed-stdio writer stopped".to_owned(),
                         });
                 self.process.mark_dead(error.clone());
@@ -480,7 +480,7 @@ impl FramedTransport {
         if let Ok(frame) = encode_frame(&FramedMessage::Cancel { request_id }, self.max_frame_bytes)
             && self.control_sender.try_send(frame).is_err()
         {
-            self.process.mark_dead(RuntimeFailure::ModuleFailure {
+            self.process.mark_dead(RuntimeFailure::PluginFailure {
                 detail: "Bun framed-stdio cancellation channel stopped".to_owned(),
             });
         }
@@ -520,7 +520,7 @@ impl FramedTransport {
             self.max_frame_bytes,
         ) && self.control_sender.try_send(frame).is_err()
         {
-            self.process.mark_dead(RuntimeFailure::ModuleFailure {
+            self.process.mark_dead(RuntimeFailure::PluginFailure {
                 detail: "Bun framed-stdio stream cancellation channel stopped".to_owned(),
             });
         }

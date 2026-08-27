@@ -167,7 +167,7 @@ export function bindAccountAdminProvider(
           }
           return { kind: "runtime", failure: result.error.error };
         } catch (error) {
-          return { kind: "runtime", failure: { kind: "module_failure", detail: providerErrorMessage(error) } };
+          return { kind: "runtime", failure: { kind: "plugin_failure", detail: providerErrorMessage(error) } };
         }
       }
       case "list_subjects": {
@@ -187,7 +187,7 @@ export function bindAccountAdminProvider(
           }
           return { kind: "runtime", failure: result.error.error };
         } catch (error) {
-          return { kind: "runtime", failure: { kind: "module_failure", detail: providerErrorMessage(error) } };
+          return { kind: "runtime", failure: { kind: "plugin_failure", detail: providerErrorMessage(error) } };
         }
       }
       case "set_subject_status": {
@@ -207,7 +207,7 @@ export function bindAccountAdminProvider(
           }
           return { kind: "runtime", failure: result.error.error };
         } catch (error) {
-          return { kind: "runtime", failure: { kind: "module_failure", detail: providerErrorMessage(error) } };
+          return { kind: "runtime", failure: { kind: "plugin_failure", detail: providerErrorMessage(error) } };
         }
       }
         default:

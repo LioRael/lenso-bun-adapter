@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex};
 
 use lenso_kernel::{CancellationToken, InvocationContext, SealedInvocationExtension};
-use lenso_otel_module::{TraceContext, TraceContextPropagator};
+use lenso_otel_plugin::{TraceContext, TraceContextPropagator};
 
 use super::*;
 
@@ -130,7 +130,7 @@ impl BunProviderHandler for TraceContextHandler {
         } = request;
         if let Some(extension) = extensions
             .into_iter()
-            .find(|extension| extension.key == lenso_otel_module::TRACE_CONTEXT_EXTENSION_KEY)
+            .find(|extension| extension.key == lenso_otel_plugin::TRACE_CONTEXT_EXTENSION_KEY)
         {
             let context = InvocationContext::new(request_id, None, CancellationToken::new())
                 .with_sealed_extension(SealedInvocationExtension::signed(

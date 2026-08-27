@@ -340,7 +340,7 @@ pub(crate) enum WireFailure {
     ProtocolViolation {
         detail: Option<String>,
     },
-    MissingModuleFactory {
+    MissingPluginFactory {
         instance: String,
         package_id: String,
     },
@@ -364,10 +364,10 @@ pub(crate) enum WireFailure {
     Internal {
         detail: String,
     },
-    ModuleFailure {
+    PluginFailure {
         detail: String,
     },
-    ModuleRestartExhausted {
+    PluginRestartExhausted {
         instance: String,
         attempts: usize,
     },
@@ -446,10 +446,10 @@ pub(crate) fn to_wire_failure(error: &RuntimeFailure) -> WireFailure {
         RuntimeFailure::ProtocolViolation { capability } => WireFailure::ProtocolViolation {
             detail: Some((*capability).to_owned()),
         },
-        RuntimeFailure::MissingModuleFactory {
+        RuntimeFailure::MissingPluginFactory {
             instance,
             package_id,
-        } => WireFailure::MissingModuleFactory {
+        } => WireFailure::MissingPluginFactory {
             instance: instance.clone(),
             package_id: package_id.clone(),
         },
@@ -476,11 +476,11 @@ pub(crate) fn to_wire_failure(error: &RuntimeFailure) -> WireFailure {
         RuntimeFailure::Internal { detail } => WireFailure::Internal {
             detail: detail.clone(),
         },
-        RuntimeFailure::ModuleFailure { detail } => WireFailure::ModuleFailure {
+        RuntimeFailure::PluginFailure { detail } => WireFailure::PluginFailure {
             detail: detail.clone(),
         },
-        RuntimeFailure::ModuleRestartExhausted { instance, attempts } => {
-            WireFailure::ModuleRestartExhausted {
+        RuntimeFailure::PluginRestartExhausted { instance, attempts } => {
+            WireFailure::PluginRestartExhausted {
                 instance: instance.clone(),
                 attempts: *attempts,
             }
@@ -500,10 +500,10 @@ pub(crate) fn from_wire_failure(capability: &'static str, failure: WireFailure) 
             providers,
         },
         WireFailure::ProtocolViolation { .. } => RuntimeFailure::ProtocolViolation { capability },
-        WireFailure::MissingModuleFactory {
+        WireFailure::MissingPluginFactory {
             instance,
             package_id,
-        } => RuntimeFailure::MissingModuleFactory {
+        } => RuntimeFailure::MissingPluginFactory {
             instance,
             package_id,
         },
@@ -527,9 +527,9 @@ pub(crate) fn from_wire_failure(capability: &'static str, failure: WireFailure) 
         }
         WireFailure::Cancelled { request_id } => RuntimeFailure::Cancelled { request_id },
         WireFailure::Internal { detail } => RuntimeFailure::Internal { detail },
-        WireFailure::ModuleFailure { detail } => RuntimeFailure::ModuleFailure { detail },
-        WireFailure::ModuleRestartExhausted { instance, attempts } => {
-            RuntimeFailure::ModuleRestartExhausted { instance, attempts }
+        WireFailure::PluginFailure { detail } => RuntimeFailure::PluginFailure { detail },
+        WireFailure::PluginRestartExhausted { instance, attempts } => {
+            RuntimeFailure::PluginRestartExhausted { instance, attempts }
         }
     }
 }
@@ -558,12 +558,12 @@ pub(crate) fn write_frame<W: Write>(
 ) -> Result<(), RuntimeFailure> {
     writer
         .write_all(&encode_frame(message, max_frame_bytes)?)
-        .map_err(|error| RuntimeFailure::ModuleFailure {
+        .map_err(|error| RuntimeFailure::PluginFailure {
             detail: format!("Bun framed-stdio write failed: {error}"),
         })?;
     writer
         .flush()
-        .map_err(|error| RuntimeFailure::ModuleFailure {
+        .map_err(|error| RuntimeFailure::PluginFailure {
             detail: format!("Bun framed-stdio flush failed: {error}"),
         })
 }
@@ -708,7 +708,7 @@ mod tests {
             RuntimeFailure::ProtocolViolation {
                 capability: "example.greeting@1",
             },
-            RuntimeFailure::MissingModuleFactory {
+            RuntimeFailure::MissingPluginFactory {
                 instance: "provider".to_owned(),
                 package_id: "package".to_owned(),
             },
@@ -729,10 +729,10 @@ mod tests {
             RuntimeFailure::Internal {
                 detail: "internal".to_owned(),
             },
-            RuntimeFailure::ModuleFailure {
+            RuntimeFailure::PluginFailure {
                 detail: "failed".to_owned(),
             },
-            RuntimeFailure::ModuleRestartExhausted {
+            RuntimeFailure::PluginRestartExhausted {
                 instance: "provider".to_owned(),
                 attempts: 3,
             },

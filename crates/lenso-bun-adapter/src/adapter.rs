@@ -9,12 +9,12 @@ use std::{
 };
 
 use futures::{FutureExt, channel::oneshot, future::LocalBoxFuture};
-use lenso_app_plan::{EventAdmissionPlan, ExecutionClassId, ModuleInstancePlan, ResolvedAppPlan};
+use lenso_app_plan::{EventAdmissionPlan, ExecutionClassId, PluginInstancePlan, ResolvedAppPlan};
 use lenso_kernel::{
-    ActivateContext, DeactivateContext, ManagedResource, ModuleFuture, ModuleLifecycle,
-    NativeEventEndpoint, NativeRequestEndpoint, NativeStreamEndpoint, NativeStreamItem,
-    NativeStreamSession, PreparedBinding, PreparedEventBinding, PreparedNativeApp,
-    PreparedNativeModule, PreparedStreamBinding, RuntimeFailure,
+    ActivateContext, DeactivateContext, ManagedResource, NativeEventEndpoint,
+    NativeRequestEndpoint, NativeStreamEndpoint, NativeStreamItem, NativeStreamSession,
+    PluginFuture, PluginLifecycle, PreparedBinding, PreparedEventBinding, PreparedNativeApp,
+    PreparedNativePlugin, PreparedStreamBinding, RuntimeFailure,
 };
 use serde_json::Value;
 
@@ -189,8 +189,8 @@ impl BunAdapter {
     fn prepare_instance(
         &self,
         plan: &ResolvedAppPlan,
-        instance: &ModuleInstancePlan,
-    ) -> Result<PreparedNativeModule, RuntimeFailure> {
+        instance: &PluginInstancePlan,
+    ) -> Result<PreparedNativePlugin, RuntimeFailure> {
         if instance.entrypoint() == "default" || instance.entrypoint().is_empty() {
             return Err(RuntimeFailure::InvalidResolvedPlan {
                 detail: format!(
@@ -355,17 +355,17 @@ impl BunAdapter {
                 }) as Rc<dyn NativeEventEndpoint>
             })
             .collect();
-        Ok(PreparedNativeModule::with_all_endpoints(
+        Ok(PreparedNativePlugin::with_all_endpoints(
             endpoints,
             stream_endpoints,
             event_endpoints,
-            BunModuleLifecycle { transport },
+            BunPluginLifecycle { transport },
         ))
     }
 
     fn spawn_process(
         &self,
-        instance: &ModuleInstancePlan,
+        instance: &PluginInstancePlan,
         endpoints: &[EndpointDescriptor],
         event_bindings: &[EventBindingDescriptor],
         capability: &'static str,
@@ -432,7 +432,7 @@ impl lenso_kernel::ExecutionAdapter for BunAdapter {
         let mut stream_endpoints = BTreeMap::new();
         let mut event_endpoints = BTreeMap::new();
         for instance in plan
-            .module_instances()
+            .plugin_instances()
             .iter()
             .filter(|instance| instance.execution_class() == &ExecutionClassId::bun_child_process())
         {
@@ -530,9 +530,9 @@ impl lenso_kernel::ExecutionAdapter for BunAdapter {
         &self,
         plan: &ResolvedAppPlan,
         instance_key: &str,
-    ) -> Result<PreparedNativeModule, RuntimeFailure> {
+    ) -> Result<PreparedNativePlugin, RuntimeFailure> {
         let instance = plan
-            .module_instances()
+            .plugin_instances()
             .iter()
             .find(|instance| instance.instance_key() == instance_key)
             .ok_or_else(|| RuntimeFailure::InvalidResolvedPlan {
@@ -924,12 +924,12 @@ impl NativeStreamEndpoint for BunStreamEndpoint {
 }
 
 #[derive(Debug)]
-struct BunModuleLifecycle {
+struct BunPluginLifecycle {
     transport: TransportClient,
 }
 
-impl ModuleLifecycle for BunModuleLifecycle {
-    fn prepare(&self, context: lenso_kernel::PrepareContext) -> ModuleFuture {
+impl PluginLifecycle for BunPluginLifecycle {
+    fn prepare(&self, context: lenso_kernel::PrepareContext) -> PluginFuture {
         let resource = BunProcessResource {
             transport: self.transport.clone(),
         };
@@ -944,7 +944,7 @@ impl ModuleLifecycle for BunModuleLifecycle {
         })
     }
 
-    fn activate(&self, context: ActivateContext) -> ModuleFuture {
+    fn activate(&self, context: ActivateContext) -> PluginFuture {
         let exit = self.transport.exit_waiter();
         let cancellation = context.cancellation();
         let task = async move {
@@ -970,7 +970,7 @@ impl ModuleLifecycle for BunModuleLifecycle {
         })
     }
 
-    fn deactivate(&self, _context: DeactivateContext) -> ModuleFuture {
+    fn deactivate(&self, _context: DeactivateContext) -> PluginFuture {
         Box::pin(futures::future::ready(Ok(())))
     }
 }

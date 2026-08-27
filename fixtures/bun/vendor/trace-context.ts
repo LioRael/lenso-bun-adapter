@@ -1,4 +1,4 @@
-/** W3C Trace Context propagation for a Bun Module Adapter. */
+/** W3C Trace Context propagation for a Bun Plugin Adapter. */
 
 export const TRACE_CONTEXT_EXTENSION_KEY = "lenso.otel.trace-context";
 

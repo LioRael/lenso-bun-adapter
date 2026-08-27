@@ -239,8 +239,8 @@ async function handleRequest(request: WireRequest): Promise<WireOutcome> {
   const requestedFailure: Record<string, Record<string, unknown>> = {
     __runtime_unavailable__: { kind: "unavailable" },
     __runtime_ambiguous_binding__: { kind: "ambiguous_binding", providers: 2 },
-    __runtime_missing_module_factory__: {
-      kind: "missing_module_factory",
+    __runtime_missing_plugin_factory__: {
+      kind: "missing_plugin_factory",
       instance: "provider",
       package_id: "fixture.provider",
     },
@@ -252,8 +252,8 @@ async function handleRequest(request: WireRequest): Promise<WireOutcome> {
     __runtime_invalid_resolved_plan__: { kind: "invalid_resolved_plan", detail: "invalid" },
     __runtime_admission_closed__: { kind: "admission_closed" },
     __runtime_internal__: { kind: "internal", detail: "internal" },
-    __runtime_module_restart_exhausted__: {
-      kind: "module_restart_exhausted",
+    __runtime_plugin_restart_exhausted__: {
+      kind: "plugin_restart_exhausted",
       instance: "provider",
       attempts: 3,
     },

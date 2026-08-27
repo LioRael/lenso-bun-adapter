@@ -1,11 +1,12 @@
 {
   "lockfileVersion": 1,
+  "configVersion": 0,
   "workspaces": {
     "": {
       "name": "lenso-bun-adapter-workspace",
       "dependencies": {
         "@lenso/bun": "workspace:*",
-        "@lenso/bun-module": "workspace:*",
+        "@lenso/bun-plugin": "workspace:*",
         "@lenso/contract-runtime": "0.1.0",
       },
       "devDependencies": {
@@ -15,9 +16,9 @@
     },
     "packages/lenso-bun": {
       "name": "@lenso/bun",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "dependencies": {
-        "@lenso/bun-module": "0.1.0",
+        "@lenso/bun-plugin": "0.1.0",
         "@lenso/contract-runtime": "0.1.0",
       },
       "devDependencies": {
@@ -25,8 +26,8 @@
         "typescript": "7.0.2",
       },
     },
-    "packages/lenso-bun-module": {
-      "name": "@lenso/bun-module",
+    "packages/lenso-bun-plugin": {
+      "name": "@lenso/bun-plugin",
       "version": "0.1.0",
       "dependencies": {
         "@lenso/contract-runtime": "0.1.0",
@@ -40,7 +41,7 @@
   "packages": {
     "@lenso/bun": ["@lenso/bun@workspace:packages/lenso-bun"],
 
-    "@lenso/bun-module": ["@lenso/bun-module@workspace:packages/lenso-bun-module"],
+    "@lenso/bun-plugin": ["@lenso/bun-plugin@workspace:packages/lenso-bun-plugin"],
 
     "@lenso/contract-runtime": ["@lenso/contract-runtime@0.1.0", "", {}, "sha512-+tz+mSXRWC5+ptKbCJqc2QX31SfYpmzel3B+VgKOviEtSDUeAKfFkSD/n+3iK9DztH3HuDpCSgKVPlD0rpSNyg=="],
 
