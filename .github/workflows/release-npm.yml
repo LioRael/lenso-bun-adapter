@@ -3,13 +3,13 @@ name: Release npm package
 on:
   push:
     tags:
-      - "lenso-bun-module-ts-v*"
+      - "lenso-bun-plugin-ts-v*"
 
 permissions: {}
 
 jobs:
   publish:
-    name: Publish @lenso/bun-module
+    name: Publish @lenso/bun-plugin
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -26,8 +26,8 @@ jobs:
           node-version: 24
       - name: Verify release tag
         run: |
-          package_version="$(node -p "require('./packages/lenso-bun-module/package.json').version")"
-          test "$GITHUB_REF_NAME" = "lenso-bun-module-ts-v${package_version}"
+          package_version="$(node -p "require('./packages/lenso-bun-plugin/package.json').version")"
+          test "$GITHUB_REF_NAME" = "lenso-bun-plugin-ts-v${package_version}"
       - name: Install workspace
         run: bun install --frozen-lockfile
       - name: Verify package
@@ -36,6 +36,6 @@ jobs:
           bun run typecheck
           bun run test:typescript
           bun run package-smoke
-          npm pack --dry-run ./packages/lenso-bun-module
+          npm pack --dry-run ./packages/lenso-bun-plugin
       - name: Publish package
-        run: npm publish ./packages/lenso-bun-module --access public --provenance
+        run: npm publish ./packages/lenso-bun-plugin --access public --provenance

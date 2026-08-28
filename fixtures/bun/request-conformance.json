@@ -68,10 +68,10 @@
     "request": {
       "capability_id": "example.greeting@1",
       "operation": "greet",
-      "payload": { "name": "__runtime_missing_module_factory__" }
+      "payload": { "name": "__runtime_missing_plugin_factory__" }
     },
     "outcome": "runtime",
-    "failure_kind": "missing_module_factory"
+    "failure_kind": "missing_plugin_factory"
   },
   {
     "name": "runtime-unavailable-execution-class",
@@ -123,10 +123,10 @@
     "request": {
       "capability_id": "example.greeting@1",
       "operation": "greet",
-      "payload": { "name": "__runtime_module_restart_exhausted__" }
+      "payload": { "name": "__runtime_plugin_restart_exhausted__" }
     },
     "outcome": "runtime",
-    "failure_kind": "module_restart_exhausted"
+    "failure_kind": "plugin_restart_exhausted"
   },
   {
     "name": "deadline-exceeded",
@@ -172,7 +172,7 @@
       "payload": { "name": "__crash__" }
     },
     "outcome": "runtime",
-    "failure_kind": "module_failure"
+    "failure_kind": "plugin_failure"
   },
   {
     "name": "bounded-overload",

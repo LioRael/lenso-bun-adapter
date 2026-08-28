@@ -194,7 +194,7 @@ impl BunAdapter {
         if instance.entrypoint() == "default" || instance.entrypoint().is_empty() {
             return Err(RuntimeFailure::InvalidResolvedPlan {
                 detail: format!(
-                    "Bun Module Instance `{}` needs a script entrypoint",
+                    "Bun Plugin Instance `{}` needs a script entrypoint",
                     instance.instance_key()
                 ),
             });
@@ -379,7 +379,7 @@ impl BunAdapter {
         if !entrypoint.is_file() {
             return Err(RuntimeFailure::InvalidResolvedPlan {
                 detail: format!(
-                    "Bun entrypoint `{}` for Module Instance `{}` does not exist",
+                    "Bun entrypoint `{}` for Plugin Instance `{}` does not exist",
                     entrypoint.display(),
                     instance.instance_key()
                 ),
@@ -536,7 +536,7 @@ impl lenso_kernel::ExecutionAdapter for BunAdapter {
             .iter()
             .find(|instance| instance.instance_key() == instance_key)
             .ok_or_else(|| RuntimeFailure::InvalidResolvedPlan {
-                detail: format!("unknown Module Instance `{instance_key}`"),
+                detail: format!("unknown Plugin Instance `{instance_key}`"),
             })?;
         self.prepare_instance(plan, instance)
     }
