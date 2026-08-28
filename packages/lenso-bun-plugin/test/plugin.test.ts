@@ -1,7 +1,9 @@
 import { expect, test } from "bun:test";
 import type { InvocationContext } from "@lenso/contract-runtime";
 import {
+  describePortablePlugin,
   definePlugin,
+  invokePortablePlugin,
   startPlugin,
   type CapabilityProviderBinding,
   type ProviderDispatchOutcome,
@@ -50,6 +52,30 @@ function binding(): CapabilityProviderBinding {
     },
   };
 }
+
+test("one definition exposes the portable QuickJS ABI without Bun transport", async () => {
+  const plugin = definePlugin({ providers: [binding()] });
+  expect(describePortablePlugin(plugin)).toEqual({
+    abi: "lenso.json-request@1",
+    capabilities: [
+      {
+        capability_id: "example.greeting@1",
+        descriptor_version: "1.0.0",
+        request_operations: ["greet"],
+      },
+    ],
+  });
+  expect(
+    JSON.parse(
+      await invokePortablePlugin(
+        plugin,
+        "example.greeting@1",
+        "greet",
+        '{"name":"Ada"}',
+      ),
+    ),
+  ).toEqual({ ok: { message: "Hello, Ada!" } });
+});
 
 async function rpc(
   port: number,
