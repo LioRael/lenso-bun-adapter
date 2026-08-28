@@ -18,14 +18,14 @@ jobs:
         with:
           bun-version: 1.2.21
       - run: bun install --frozen-lockfile
-      - run: cargo install lenso-contract-codegen --version 0.5.2 --locked
+      - run: cargo install --git https://github.com/LioRael/lenso-protocols --rev 9769bc5dc828fd9111da6d28a4ecd5f1bb198ab4 lenso-contract-codegen --locked
       - run: bun run --filter '@lenso/bun' capabilities:check
       - run: bun run build
       - run: bun run typecheck
       - run: bun run test:typescript
       - run: bun run package-smoke
       - run: npm pack --dry-run ./packages/lenso-bun
-      - run: npm pack --dry-run ./packages/lenso-bun-module
+      - run: npm pack --dry-run ./packages/lenso-bun-plugin
       - run: cargo fmt --all -- --check
       - run: cargo check --locked --workspace --all-targets
       - run: cargo test --locked --workspace
