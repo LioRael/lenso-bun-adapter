@@ -5,7 +5,6 @@ use std::{
     time::Duration as StdDuration,
 };
 
-use futures::future::LocalBoxFuture;
 use lenso_app_plan::{
     AppComposition, CapabilityBinding, CapabilityEndpointPlan, CapabilityRequirementPlan,
     ExecutionClassId, PluginInstancePlan,
@@ -16,15 +15,16 @@ use lenso_auth_sdk::{
 };
 use lenso_bun_adapter::{BunAdapter, BunCapabilityCodec, BunWire};
 use lenso_capability_auth::{
-    AUTHENTICATE_OPERATION, Auth, AuthEndpoint, AuthError, AuthInvocationError, AuthProvider,
-    AuthRequest, AuthResponse, CAPABILITY_ID as AUTH_ID, DESCRIPTOR_VERSION as AUTH_VERSION,
+    AUTHENTICATE_OPERATION, Auth, AuthEndpoint, AuthError, AuthProvider, AuthRequest,
+    CAPABILITY_ID as AUTH_ID, DESCRIPTOR_VERSION as AUTH_VERSION,
 };
 use lenso_capability_secure_greeting::{
     CAPABILITY_ID, DESCRIPTOR_VERSION, GREET_OPERATION, GreetError, GreetRequest, GreetResponse,
     SecureGreeting, decode_greet_error, decode_greet_response, encode_greet_request,
 };
 use lenso_kernel::{
-    CancellationToken, DeterministicDriver, ExecutionAdapterCatalog, Kernel, RuntimeFailure,
+    CancellationToken, DeterministicDriver, ExecutionAdapterCatalog, Kernel, NativeRequestFuture,
+    RuntimeFailure,
 };
 use lenso_native_adapter::{
     NativePluginFactory, NativePluginFactoryContext, NativePluginInstance, NativePluginRegistry,
@@ -122,14 +122,14 @@ impl AuthProvider for NativeAuthProvider {
         &self,
         _context: lenso_kernel::InvocationContext,
         request: AuthRequest,
-    ) -> LocalBoxFuture<'static, Result<AuthResponse, AuthInvocationError>> {
+    ) -> NativeRequestFuture<Auth> {
         let issuer = self.issuer.clone();
         Box::pin(async move {
-            let credential = request
-                .credential
-                .ok_or(AuthInvocationError::Domain(AuthError::Invalid))?;
+            let Some(credential) = request.credential else {
+                return Ok(Err(AuthError::Invalid));
+            };
             if credential.scheme != "bearer" {
-                return Err(AuthInvocationError::Domain(AuthError::Unsupported));
+                return Ok(Err(AuthError::Unsupported));
             }
             let now = OffsetDateTime::now_utc();
             let (subject, validity) = match credential.value.as_str() {
@@ -145,7 +145,7 @@ impl AuthProvider for NativeAuthProvider {
                     "user-123",
                     Validity::new(now - Duration::minutes(2), now - Duration::minutes(1)),
                 ),
-                _ => return Err(AuthInvocationError::Domain(AuthError::Invalid)),
+                _ => return Ok(Err(AuthError::Invalid)),
             };
             let assertion = issuer.issue(
                 subject,
@@ -155,7 +155,7 @@ impl AuthProvider for NativeAuthProvider {
                 validity.expect("fixture validity is ordered"),
                 BTreeMap::new(),
             );
-            Ok(authenticated_response(&assertion))
+            Ok(Ok(authenticated_response(&assertion)))
         })
     }
 }

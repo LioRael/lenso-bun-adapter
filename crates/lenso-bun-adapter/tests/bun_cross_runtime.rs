@@ -1018,7 +1018,7 @@ fn accepted_event_is_not_replayed_when_a_bun_subscriber_exits_and_recovers() {
         for _ in 0..100 {
             driver.run(driver.yield_now());
             if app
-                .module_generation("bun-provider-a")
+                .plugin_generation("bun-provider-a")
                 .is_some_and(|generation| generation >= 2)
             {
                 restarted = true;
@@ -1029,11 +1029,11 @@ fn accepted_event_is_not_replayed_when_a_bun_subscriber_exits_and_recovers() {
         assert!(
             restarted,
             "{wire:?} Event subscriber should recover; generation={:?}, failure={:?}",
-            app.module_generation("bun-provider-a"),
+            app.plugin_generation("bun-provider-a"),
             app.terminal_failure()
         );
         assert_eq!(
-            app.module_generation("bun-provider-a"),
+            app.plugin_generation("bun-provider-a"),
             Some(2),
             "{wire:?} should recreate exactly one generation after the crashing Event"
         );
@@ -1042,7 +1042,7 @@ fn accepted_event_is_not_replayed_when_a_bun_subscriber_exits_and_recovers() {
             std::thread::sleep(Duration::from_millis(10));
         }
         assert_eq!(
-            app.module_generation("bun-provider-a"),
+            app.plugin_generation("bun-provider-a"),
             Some(2),
             "{wire:?} must not replay the accepted crashing Event into the recovered generation"
         );
@@ -1296,7 +1296,7 @@ fn assert_stream_provider_restart(wire: BunWire) {
     for _ in 0..100 {
         driver.run(driver.yield_now());
         if app
-            .module_generation("bun-provider")
+            .plugin_generation("bun-provider")
             .is_some_and(|generation| generation >= 2)
         {
             restarted = true;
@@ -1307,7 +1307,7 @@ fn assert_stream_provider_restart(wire: BunWire) {
     assert!(
         restarted,
         "stream provider generation should be recreated; generation={:?}",
-        app.module_generation("bun-provider")
+        app.plugin_generation("bun-provider")
     );
     let existing_result = driver.run(existing.receive());
     assert!(
@@ -1990,7 +1990,7 @@ fn assert_provider_exit_recreates_generation(wire: BunWire) {
     for _ in 0..100 {
         driver.run(driver.yield_now());
         if app
-            .module_generation("bun-provider")
+            .plugin_generation("bun-provider")
             .is_some_and(|generation| generation >= 2)
         {
             restarted = true;
@@ -2001,7 +2001,7 @@ fn assert_provider_exit_recreates_generation(wire: BunWire) {
     assert!(
         restarted,
         "provider generation should be recreated; generation={:?}, failure={:?}",
-        app.module_generation("bun-provider"),
+        app.plugin_generation("bun-provider"),
         app.terminal_failure()
     );
     let result = driver.run(app.invoke::<Greeting>(
