@@ -1,26 +1,5 @@
-import { definePlugin, serve } from "@lenso/bun-plugin";
-import {
-  bindProvider,
-  type Provider,
-} from "./generated/greeting.ts";
+// Generated execution entrypoint. Plugin authors edit `sdk-request-plugin.ts`.
+import { serve } from "@lenso/bun-plugin";
+import plugin from "./sdk-request-plugin.ts";
 
-const greeting: Provider = {
-  async greet(_context, request) {
-    if (request.name.length === 0) {
-      return {
-        ok: false,
-        error: { kind: "domain", error: "empty_name" },
-      };
-    }
-    return {
-      ok: true,
-      value: { message: `Hello from Bun, ${request.name}!` },
-    };
-  },
-};
-
-serve(
-  definePlugin({
-    providers: [bindProvider(greeting)],
-  }),
-);
+serve(plugin);

@@ -8,12 +8,15 @@ source repository revision and the checked Descriptor/Schema snapshot used to
 reproduce it.
 
 ```ts
-import { definePlugin, serve } from "@lenso/bun";
+import { definePlugin } from "@lenso/bun";
 import { bindJobsProvider } from "@lenso/bun/capabilities/jobs";
 import { jobs } from "./jobs.ts"; // Implements JobsProvider.
 
-serve(definePlugin({ providers: [bindJobsProvider(jobs)] }));
+export default definePlugin({ providers: [bindJobsProvider(jobs)] });
 ```
+
+The generated Plugin entrypoint starts the runtime. Author code does not call
+`serve` or depend on its transport contract.
 
 Run `bun run capabilities:check` with `lenso-contract-codegen` on `PATH` to
 verify all locked projections. Maintainers use `bun run capabilities:sync`

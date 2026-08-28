@@ -6,7 +6,7 @@ and `bind*Provider` functions; this package owns the Bun process handshake,
 bounded JSON-RPC server, cancellation, shutdown, and Runtime Failure mapping.
 
 ```ts
-import { definePlugin, serve } from "@lenso/bun-plugin";
+import { definePlugin } from "@lenso/bun-plugin";
 import {
   bindGreetingProvider,
   type GreetingProvider,
@@ -21,8 +21,12 @@ const provider: GreetingProvider = {
   },
 };
 
-serve(definePlugin({ providers: [bindGreetingProvider(provider)] }));
+export default definePlugin({ providers: [bindGreetingProvider(provider)] });
 ```
+
+Lenso generates the executable entrypoint that calls the low-level `serve`
+function. Plugin authors export the definition and do not implement startup or
+wire handling themselves.
 
 The initial public surface supports request Capabilities over the production
 JSON-RPC loopback wire. Framed stdio remains a conformance and benchmark wire,
