@@ -1,5 +1,10 @@
 # @lenso/bun-plugin
 
+`definePlugin(...)` is runtime-independent authoring. Generated wrappers may
+compile the same definition to a bounded QuickJS ES module or a Bun executable;
+`serve(...)` is only the Bun transport lowering. Portable definitions must not
+use `Bun.*`, filesystem, socket, or other platform globals in Provider logic.
+
 Author a Lenso Plugin in Bun without implementing the Execution Adapter
 wire protocol. Generated Capability bindings provide typed Provider interfaces
 and `bind*Provider` functions; this package owns the Bun process handshake,

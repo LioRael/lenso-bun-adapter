@@ -41,6 +41,16 @@ export interface BunPluginDefinition {
   readonly maxConcurrentRequests: number;
 }
 
+/** Runtime-independent descriptor consumed by generated QuickJS and Bun wrappers. */
+export interface PortablePluginDescriptor {
+  readonly abi: "lenso.json-request@1";
+  readonly capabilities: ReadonlyArray<{
+    readonly capability_id: string;
+    readonly descriptor_version: string;
+    readonly request_operations: ReadonlyArray<string>;
+  }>;
+}
+
 export interface StartPluginOptions {
   readonly hostname?: string;
   readonly port?: number;
@@ -125,6 +135,53 @@ export function definePlugin(options: BunPluginOptions): BunPluginDefinition {
     providers: Object.freeze([...options.providers]),
     maxConcurrentRequests,
   });
+}
+
+/** Describes the same Plugin definition without touching any Bun global API. */
+export function describePortablePlugin(
+  definition: BunPluginDefinition,
+): PortablePluginDescriptor {
+  return {
+    abi: "lenso.json-request@1",
+    capabilities: definition.providers.map(({ descriptor }) => ({
+      capability_id: descriptor.capability_id,
+      descriptor_version: descriptor.descriptor_version,
+      request_operations: [...descriptor.operations],
+    })),
+  };
+}
+
+/** Dispatches the portable QuickJS ABI through the same authored Provider binding. */
+export async function invokePortablePlugin(
+  definition: BunPluginDefinition,
+  capability: string,
+  operation: string,
+  requestJson: string,
+): Promise<string> {
+  const provider = definition.providers.find(
+    ({ descriptor }) => descriptor.capability_id === capability,
+  );
+  if (provider === undefined) throw new Error(`unknown capability ${capability}`);
+  const context = Object.freeze({
+    requestId: 0,
+    deadlineNanos: undefined,
+    callerInstance: undefined,
+    cancelled: false,
+    extensions: Object.freeze([]),
+  }) as unknown as InvocationContext;
+  const outcome = await provider.invokeRequest(
+    operation,
+    context,
+    JSON.parse(requestJson) as unknown,
+  );
+  switch (outcome.kind) {
+    case "success":
+      return JSON.stringify({ ok: outcome.value });
+    case "domain":
+      return JSON.stringify({ error: outcome.value });
+    case "runtime":
+      throw new Error(`Plugin runtime failure: ${outcome.failure.kind}`);
+  }
 }
 
 export function serve(definition: BunPluginDefinition): BunPluginServer {
