@@ -5,6 +5,49 @@ compile the same definition to a bounded QuickJS ES module or a Bun executable;
 `serve(...)` is only the Bun transport lowering. Portable definitions must not
 use `Bun.*`, filesystem, socket, or other platform globals in Provider logic.
 
+The authored file exports only the definition:
+
+```ts
+// src/plugin.ts
+import { definePlugin } from "@lenso/bun-plugin";
+
+export default definePlugin({ providers: [greeting] });
+```
+
+Generated entrypoints lower that definition without duplicating business code:
+
+```ts
+// QuickJS entrypoint
+import plugin from "./plugin.ts";
+import {
+  describePortablePlugin,
+  invokePortablePlugin,
+} from "@lenso/bun-plugin";
+
+export function describe() {
+  return JSON.stringify(describePortablePlugin(plugin));
+}
+
+export function invoke(capability: string, operation: string, request: string) {
+  return invokePortablePlugin(plugin, capability, operation, request);
+}
+```
+
+```ts
+// Bun entrypoint
+import plugin from "./plugin.ts";
+import { serve } from "@lenso/bun-plugin";
+
+serve(plugin);
+```
+
+The build targets are then ordinary Bun outputs:
+
+```sh
+bun build src/lenso.quickjs.generated.ts --target=browser --format=esm --outfile=dist/plugin.js
+bun build src/lenso.bun.generated.ts --compile --outfile=dist/plugin
+```
+
 Author a Lenso Plugin in Bun without implementing the Execution Adapter
 wire protocol. Generated Capability bindings provide typed Provider interfaces
 and `bind*Provider` functions; this package owns the Bun process handshake,
