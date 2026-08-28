@@ -10,7 +10,7 @@ use std::{
 use futures::{StreamExt, stream::FuturesUnordered};
 use lenso_app_plan::{
     AppComposition, CapabilityBinding, CapabilityEndpointPlan, CapabilityRequirementPlan,
-    ExecutionClassId, ModuleInstancePlan, RestartPolicy,
+    ExecutionClassId, PluginInstancePlan, RestartPolicy,
 };
 use lenso_capability_greeting::{
     CAPABILITY_ID, DESCRIPTOR_VERSION, GreetError, GreetRequest, GreetResponse, Greeting,
@@ -409,7 +409,7 @@ impl BunProviderHandler for RustGreetingProvider {
                 capability: CAPABILITY_ID,
                 providers: 2,
             }),
-            "__runtime_missing_module_factory__" => Some(RuntimeFailure::MissingModuleFactory {
+            "__runtime_missing_plugin_factory__" => Some(RuntimeFailure::MissingPluginFactory {
                 instance: "provider".to_owned(),
                 package_id: "fixture.provider".to_owned(),
             }),
@@ -426,8 +426,8 @@ impl BunProviderHandler for RustGreetingProvider {
             "__runtime_internal__" => Some(RuntimeFailure::Internal {
                 detail: "internal".to_owned(),
             }),
-            "__runtime_module_restart_exhausted__" => {
-                Some(RuntimeFailure::ModuleRestartExhausted {
+            "__runtime_plugin_restart_exhausted__" => {
+                Some(RuntimeFailure::PluginRestartExhausted {
                     instance: "provider".to_owned(),
                     attempts: 3,
                 })
@@ -447,7 +447,7 @@ impl BunProviderHandler for RustGreetingProvider {
             }));
         }
         if request.name == "__crash__" {
-            return BunResponse::Runtime(RuntimeFailure::ModuleFailure {
+            return BunResponse::Runtime(RuntimeFailure::PluginFailure {
                 detail: "Rust provider generation failed".to_owned(),
             });
         }
@@ -646,7 +646,7 @@ fn greeting_plan_with_consumer(
 ) -> lenso_app_plan::ResolvedAppPlan {
     let endpoint =
         CapabilityEndpointPlan::new(CAPABILITY_ID, DESCRIPTOR_VERSION, ["greet"]).with_limits(1, 1);
-    let provider = ModuleInstancePlan::new("bun-provider", "fixture.bun.greeting")
+    let provider = PluginInstancePlan::new("bun-provider", "fixture.bun.greeting")
         .with_entrypoint(provider_script.to_string_lossy())
         .with_execution_class(ExecutionClassId::bun_child_process())
         .with_restart_policy(RestartPolicy::on_failure(
@@ -657,7 +657,7 @@ fn greeting_plan_with_consumer(
             Duration::ZERO,
         ))
         .with_capability(endpoint);
-    let consumer = ModuleInstancePlan::new("bun-consumer", "fixture.bun.consumer")
+    let consumer = PluginInstancePlan::new("bun-consumer", "fixture.bun.consumer")
         .with_entrypoint(consumer_script.to_string_lossy())
         .with_execution_class(ExecutionClassId::bun_child_process())
         .with_requirement(CapabilityRequirementPlan::one(
@@ -685,7 +685,7 @@ fn event_plan(accepting_script: &Path, rejecting_script: &Path) -> lenso_app_pla
     )
     .with_event_operation(EVENT_OPERATION)
     .with_event_capacity(2);
-    let provider_a = ModuleInstancePlan::new("bun-provider-a", "fixture.bun.events")
+    let provider_a = PluginInstancePlan::new("bun-provider-a", "fixture.bun.events")
         .with_entrypoint(accepting_script.to_string_lossy())
         .with_execution_class(ExecutionClassId::bun_child_process())
         .with_restart_policy(RestartPolicy::on_failure(
@@ -696,7 +696,7 @@ fn event_plan(accepting_script: &Path, rejecting_script: &Path) -> lenso_app_pla
             Duration::ZERO,
         ))
         .with_capability(endpoint.clone());
-    let provider_b = ModuleInstancePlan::new("bun-provider-b", "fixture.bun.events.reject")
+    let provider_b = PluginInstancePlan::new("bun-provider-b", "fixture.bun.events.reject")
         .with_entrypoint(rejecting_script.to_string_lossy())
         .with_execution_class(ExecutionClassId::bun_child_process())
         .with_restart_policy(RestartPolicy::on_failure(
@@ -707,7 +707,7 @@ fn event_plan(accepting_script: &Path, rejecting_script: &Path) -> lenso_app_pla
             Duration::ZERO,
         ))
         .with_capability(endpoint);
-    let consumer = ModuleInstancePlan::new("bun-consumer", "fixture.bun.events.consumer")
+    let consumer = PluginInstancePlan::new("bun-consumer", "fixture.bun.events.consumer")
         .with_entrypoint(accepting_script.to_string_lossy())
         .with_execution_class(ExecutionClassId::bun_child_process())
         .with_requirement(CapabilityRequirementPlan::many(
@@ -750,7 +750,7 @@ fn stream_plan_with_concurrency(
     )
     .with_stream_operation(CHAT_OPERATION)
     .with_limits(0, max_concurrency);
-    let provider = ModuleInstancePlan::new("bun-provider", "fixture.bun.stream")
+    let provider = PluginInstancePlan::new("bun-provider", "fixture.bun.stream")
         .with_entrypoint(script.to_string_lossy())
         .with_execution_class(ExecutionClassId::bun_child_process())
         .with_restart_policy(RestartPolicy::on_failure(
@@ -761,7 +761,7 @@ fn stream_plan_with_concurrency(
             Duration::ZERO,
         ))
         .with_capability(endpoint);
-    let consumer = ModuleInstancePlan::new("bun-consumer", "fixture.bun.stream-consumer")
+    let consumer = PluginInstancePlan::new("bun-consumer", "fixture.bun.stream-consumer")
         .with_entrypoint(script.to_string_lossy())
         .with_execution_class(ExecutionClassId::bun_child_process())
         .with_requirement(CapabilityRequirementPlan::one(
@@ -1018,7 +1018,7 @@ fn accepted_event_is_not_replayed_when_a_bun_subscriber_exits_and_recovers() {
         for _ in 0..100 {
             driver.run(driver.yield_now());
             if app
-                .module_generation("bun-provider-a")
+                .plugin_generation("bun-provider-a")
                 .is_some_and(|generation| generation >= 2)
             {
                 restarted = true;
@@ -1029,11 +1029,11 @@ fn accepted_event_is_not_replayed_when_a_bun_subscriber_exits_and_recovers() {
         assert!(
             restarted,
             "{wire:?} Event subscriber should recover; generation={:?}, failure={:?}",
-            app.module_generation("bun-provider-a"),
+            app.plugin_generation("bun-provider-a"),
             app.terminal_failure()
         );
         assert_eq!(
-            app.module_generation("bun-provider-a"),
+            app.plugin_generation("bun-provider-a"),
             Some(2),
             "{wire:?} should recreate exactly one generation after the crashing Event"
         );
@@ -1042,7 +1042,7 @@ fn accepted_event_is_not_replayed_when_a_bun_subscriber_exits_and_recovers() {
             std::thread::sleep(Duration::from_millis(10));
         }
         assert_eq!(
-            app.module_generation("bun-provider-a"),
+            app.plugin_generation("bun-provider-a"),
             Some(2),
             "{wire:?} must not replay the accepted crashing Event into the recovered generation"
         );
@@ -1289,14 +1289,14 @@ fn assert_stream_provider_restart(wire: BunWire) {
     let crashed = driver.run(crashing.send(ChatMessage {
         text: "__crash__".to_owned(),
     }));
-    assert!(matches!(crashed, Err(RuntimeFailure::ModuleFailure { .. })));
+    assert!(matches!(crashed, Err(RuntimeFailure::PluginFailure { .. })));
     drop(crashing);
 
     let mut restarted = false;
     for _ in 0..100 {
         driver.run(driver.yield_now());
         if app
-            .module_generation("bun-provider")
+            .plugin_generation("bun-provider")
             .is_some_and(|generation| generation >= 2)
         {
             restarted = true;
@@ -1307,7 +1307,7 @@ fn assert_stream_provider_restart(wire: BunWire) {
     assert!(
         restarted,
         "stream provider generation should be recreated; generation={:?}",
-        app.module_generation("bun-provider")
+        app.plugin_generation("bun-provider")
     );
     let existing_result = driver.run(existing.receive());
     assert!(
@@ -1315,7 +1315,7 @@ fn assert_stream_provider_restart(wire: BunWire) {
             existing_result,
             Err(RuntimeFailure::Unavailable {
                 capability: CHAT_CAPABILITY_ID
-            }) | Err(RuntimeFailure::ModuleFailure { .. })
+            }) | Err(RuntimeFailure::PluginFailure { .. })
         ),
         "{wire:?} existing stream should terminate with its old generation, got {existing_result:?}"
     );
@@ -1359,7 +1359,7 @@ fn assert_shared_corpus_contract(corpus: &[CorpusCase]) {
         ("deadline", "deadline_exceeded"),
         ("cancellation", "cancelled"),
         ("size-boundary", "protocol_violation"),
-        ("process-failure", "module_failure"),
+        ("process-failure", "plugin_failure"),
         ("overload", "resource_exhausted"),
     ] {
         assert!(
@@ -1442,7 +1442,7 @@ fn runtime_failure_kind(failure: &RuntimeFailure) -> &'static str {
         RuntimeFailure::UnknownOperation { .. } => "unknown_operation",
         RuntimeFailure::AmbiguousBinding { .. } => "ambiguous_binding",
         RuntimeFailure::ProtocolViolation { .. } => "protocol_violation",
-        RuntimeFailure::MissingModuleFactory { .. } => "missing_module_factory",
+        RuntimeFailure::MissingPluginFactory { .. } => "missing_plugin_factory",
         RuntimeFailure::UnavailableExecutionClass { .. } => "unavailable_execution_class",
         RuntimeFailure::InvalidResolvedPlan { .. } => "invalid_resolved_plan",
         RuntimeFailure::AdmissionClosed => "admission_closed",
@@ -1450,8 +1450,8 @@ fn runtime_failure_kind(failure: &RuntimeFailure) -> &'static str {
         RuntimeFailure::DeadlineExceeded { .. } => "deadline_exceeded",
         RuntimeFailure::Cancelled { .. } => "cancelled",
         RuntimeFailure::Internal { .. } => "internal",
-        RuntimeFailure::ModuleFailure { .. } => "module_failure",
-        RuntimeFailure::ModuleRestartExhausted { .. } => "module_restart_exhausted",
+        RuntimeFailure::PluginFailure { .. } => "plugin_failure",
+        RuntimeFailure::PluginRestartExhausted { .. } => "plugin_restart_exhausted",
     }
 }
 
@@ -1984,13 +1984,13 @@ fn assert_provider_exit_recreates_generation(wire: BunWire) {
             name: "__crash__".to_owned(),
         },
     ));
-    assert!(matches!(crashed, Err(RuntimeFailure::ModuleFailure { .. })));
+    assert!(matches!(crashed, Err(RuntimeFailure::PluginFailure { .. })));
 
     let mut restarted = false;
     for _ in 0..100 {
         driver.run(driver.yield_now());
         if app
-            .module_generation("bun-provider")
+            .plugin_generation("bun-provider")
             .is_some_and(|generation| generation >= 2)
         {
             restarted = true;
@@ -2001,7 +2001,7 @@ fn assert_provider_exit_recreates_generation(wire: BunWire) {
     assert!(
         restarted,
         "provider generation should be recreated; generation={:?}, failure={:?}",
-        app.module_generation("bun-provider"),
+        app.plugin_generation("bun-provider"),
         app.terminal_failure()
     );
     let result = driver.run(app.invoke::<Greeting>(

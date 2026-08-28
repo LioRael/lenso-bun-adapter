@@ -1,1 +1,1 @@
-export * from "@lenso/bun-module";
+export * from "@lenso/bun-plugin";

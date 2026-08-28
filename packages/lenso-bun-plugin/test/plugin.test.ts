@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test";
 import type { InvocationContext } from "@lenso/contract-runtime";
 import {
-  defineModule,
-  startModule,
+  definePlugin,
+  startPlugin,
   type CapabilityProviderBinding,
   type ProviderDispatchOutcome,
 } from "../src/index.ts";
@@ -65,7 +65,7 @@ async function rpc(
 }
 
 test("serves a generated request Provider with exact handshake and shutdown", async () => {
-  const server = startModule(defineModule({ providers: [binding()] }));
+  const server = startPlugin(definePlugin({ providers: [binding()] }));
   try {
     const handshake = await rpc(server.port, 1, "lenso.handshake", {
       protocol_version: 1,
@@ -134,7 +134,7 @@ test("serves a generated request Provider with exact handshake and shutdown", as
 });
 
 test("delivers cancellation to the typed Invocation Context", async () => {
-  const server = startModule(defineModule({ providers: [binding()] }));
+  const server = startPlugin(definePlugin({ providers: [binding()] }));
   try {
     const handshake = await rpc(server.port, 1, "lenso.handshake", {
       protocol_version: 1,
@@ -164,7 +164,7 @@ test("delivers cancellation to the typed Invocation Context", async () => {
 });
 
 test("rejects Provider responses that exceed the negotiated frame bound", async () => {
-  const server = startModule(defineModule({ providers: [binding()] }), {
+  const server = startPlugin(definePlugin({ providers: [binding()] }), {
     maxFrameBytes: 512,
   });
   try {
@@ -199,11 +199,11 @@ test("rejects Provider responses that exceed the negotiated frame bound", async 
 });
 
 test("rejects duplicate providers and unsupported partial interaction support", () => {
-  expect(() => defineModule({ providers: [binding(), binding()] })).toThrow(
+  expect(() => definePlugin({ providers: [binding(), binding()] })).toThrow(
     "duplicate Capability Provider",
   );
   expect(() =>
-    defineModule({
+    definePlugin({
       providers: [
         {
           ...binding(),

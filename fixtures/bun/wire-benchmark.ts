@@ -262,7 +262,7 @@ async function crash(wire: Wire) {
     detection_ms: Number(detectionMs.toFixed(3)),
     recovery_ms: Number(recoveryMs.toFixed(3)),
     exit_code: exitCode,
-    observed_failure: exitCode === 17 ? "module_failure" : "unexpected_exit",
+    observed_failure: exitCode === 17 ? "plugin_failure" : "unexpected_exit",
   };
 }
 

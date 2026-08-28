@@ -230,7 +230,7 @@ export function bindJobsProvider(
           }
           return { kind: "runtime", failure: result.error.error };
         } catch (error) {
-          return { kind: "runtime", failure: { kind: "module_failure", detail: providerErrorMessage(error) } };
+          return { kind: "runtime", failure: { kind: "plugin_failure", detail: providerErrorMessage(error) } };
         }
       }
       case "complete": {
@@ -250,7 +250,7 @@ export function bindJobsProvider(
           }
           return { kind: "runtime", failure: result.error.error };
         } catch (error) {
-          return { kind: "runtime", failure: { kind: "module_failure", detail: providerErrorMessage(error) } };
+          return { kind: "runtime", failure: { kind: "plugin_failure", detail: providerErrorMessage(error) } };
         }
       }
       case "enqueue": {
@@ -270,7 +270,7 @@ export function bindJobsProvider(
           }
           return { kind: "runtime", failure: result.error.error };
         } catch (error) {
-          return { kind: "runtime", failure: { kind: "module_failure", detail: providerErrorMessage(error) } };
+          return { kind: "runtime", failure: { kind: "plugin_failure", detail: providerErrorMessage(error) } };
         }
       }
       case "fail": {
@@ -290,7 +290,7 @@ export function bindJobsProvider(
           }
           return { kind: "runtime", failure: result.error.error };
         } catch (error) {
-          return { kind: "runtime", failure: { kind: "module_failure", detail: providerErrorMessage(error) } };
+          return { kind: "runtime", failure: { kind: "plugin_failure", detail: providerErrorMessage(error) } };
         }
       }
       case "inspect": {
@@ -310,7 +310,7 @@ export function bindJobsProvider(
           }
           return { kind: "runtime", failure: result.error.error };
         } catch (error) {
-          return { kind: "runtime", failure: { kind: "module_failure", detail: providerErrorMessage(error) } };
+          return { kind: "runtime", failure: { kind: "plugin_failure", detail: providerErrorMessage(error) } };
         }
       }
       case "renew": {
@@ -330,7 +330,7 @@ export function bindJobsProvider(
           }
           return { kind: "runtime", failure: result.error.error };
         } catch (error) {
-          return { kind: "runtime", failure: { kind: "module_failure", detail: providerErrorMessage(error) } };
+          return { kind: "runtime", failure: { kind: "plugin_failure", detail: providerErrorMessage(error) } };
         }
       }
         default:

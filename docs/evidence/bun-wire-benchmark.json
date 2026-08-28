@@ -74,13 +74,13 @@
       "detection_ms": 1.016,
       "recovery_ms": 7.708,
       "exit_code": 17,
-      "observed_failure": "module_failure"
+      "observed_failure": "plugin_failure"
     },
     "json-rpc-http": {
       "detection_ms": 1.095,
       "recovery_ms": 8.906,
       "exit_code": 17,
-      "observed_failure": "module_failure"
+      "observed_failure": "plugin_failure"
     }
   },
   "contract_cases": [
@@ -124,12 +124,12 @@
       "name": "provider-crash",
       "scenario": "process-failure",
       "expected_outcome": "runtime",
-      "expected_failure": "module_failure",
+      "expected_failure": "plugin_failure",
       "boundary_bytes": null,
       "queue_capacity": null,
       "observed_by_candidate": {
-        "framed-stdio": "module_failure",
-        "json-rpc-http": "module_failure"
+        "framed-stdio": "plugin_failure",
+        "json-rpc-http": "plugin_failure"
       }
     },
     {

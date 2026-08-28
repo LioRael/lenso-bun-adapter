@@ -5,10 +5,9 @@ use std::{
     time::Duration as StdDuration,
 };
 
-use futures::future::LocalBoxFuture;
 use lenso_app_plan::{
     AppComposition, CapabilityBinding, CapabilityEndpointPlan, CapabilityRequirementPlan,
-    ExecutionClassId, ModuleInstancePlan,
+    ExecutionClassId, PluginInstancePlan,
 };
 use lenso_auth_sdk::{
     ActorAssertionIssuer, AuthOutcome, CredentialEvidence, Validity, audience,
@@ -16,18 +15,19 @@ use lenso_auth_sdk::{
 };
 use lenso_bun_adapter::{BunAdapter, BunCapabilityCodec, BunWire};
 use lenso_capability_auth::{
-    AUTHENTICATE_OPERATION, Auth, AuthEndpoint, AuthError, AuthInvocationError, AuthProvider,
-    AuthRequest, AuthResponse, CAPABILITY_ID as AUTH_ID, DESCRIPTOR_VERSION as AUTH_VERSION,
+    AUTHENTICATE_OPERATION, Auth, AuthEndpoint, AuthError, AuthProvider, AuthRequest,
+    CAPABILITY_ID as AUTH_ID, DESCRIPTOR_VERSION as AUTH_VERSION,
 };
 use lenso_capability_secure_greeting::{
     CAPABILITY_ID, DESCRIPTOR_VERSION, GREET_OPERATION, GreetError, GreetRequest, GreetResponse,
     SecureGreeting, decode_greet_error, decode_greet_response, encode_greet_request,
 };
 use lenso_kernel::{
-    CancellationToken, DeterministicDriver, ExecutionAdapterCatalog, Kernel, RuntimeFailure,
+    CancellationToken, DeterministicDriver, ExecutionAdapterCatalog, Kernel, NativeRequestFuture,
+    RuntimeFailure,
 };
 use lenso_native_adapter::{
-    NativeModuleFactory, NativeModuleFactoryContext, NativeModuleInstance, NativeModuleRegistry,
+    NativePluginFactory, NativePluginFactoryContext, NativePluginInstance, NativePluginRegistry,
 };
 use time::{Duration, OffsetDateTime};
 
@@ -122,14 +122,14 @@ impl AuthProvider for NativeAuthProvider {
         &self,
         _context: lenso_kernel::InvocationContext,
         request: AuthRequest,
-    ) -> LocalBoxFuture<'static, Result<AuthResponse, AuthInvocationError>> {
+    ) -> NativeRequestFuture<Auth> {
         let issuer = self.issuer.clone();
         Box::pin(async move {
-            let credential = request
-                .credential
-                .ok_or(AuthInvocationError::Domain(AuthError::Invalid))?;
+            let Some(credential) = request.credential else {
+                return Ok(Err(AuthError::Invalid));
+            };
             if credential.scheme != "bearer" {
-                return Err(AuthInvocationError::Domain(AuthError::Unsupported));
+                return Ok(Err(AuthError::Unsupported));
             }
             let now = OffsetDateTime::now_utc();
             let (subject, validity) = match credential.value.as_str() {
@@ -145,7 +145,7 @@ impl AuthProvider for NativeAuthProvider {
                     "user-123",
                     Validity::new(now - Duration::minutes(2), now - Duration::minutes(1)),
                 ),
-                _ => return Err(AuthInvocationError::Domain(AuthError::Invalid)),
+                _ => return Ok(Err(AuthError::Invalid)),
             };
             let assertion = issuer.issue(
                 subject,
@@ -155,7 +155,7 @@ impl AuthProvider for NativeAuthProvider {
                 validity.expect("fixture validity is ordered"),
                 BTreeMap::new(),
             );
-            Ok(authenticated_response(&assertion))
+            Ok(Ok(authenticated_response(&assertion)))
         })
     }
 }
@@ -166,21 +166,21 @@ struct NativeFactory {
     auth: NativeAuthProvider,
 }
 
-impl NativeModuleFactory for NativeFactory {
+impl NativePluginFactory for NativeFactory {
     fn package_id(&self) -> &'static str {
         self.package
     }
 
     fn instantiate(
         &self,
-        _context: NativeModuleFactoryContext<'_>,
-    ) -> Result<NativeModuleInstance, RuntimeFailure> {
+        _context: NativePluginFactoryContext<'_>,
+    ) -> Result<NativePluginInstance, RuntimeFailure> {
         let endpoints: Vec<Rc<dyn lenso_kernel::NativeRequestEndpoint>> = match self.package {
             "fixture.auth" => vec![Rc::new(AuthEndpoint::new(self.auth.clone()))],
             "fixture.ingress" => Vec::new(),
             _ => unreachable!("factory package is fixed"),
         };
-        Ok(NativeModuleInstance::new(endpoints))
+        Ok(NativePluginInstance::new(endpoints))
     }
 }
 
@@ -204,16 +204,16 @@ fn fixture() -> PathBuf {
 }
 
 fn plan() -> lenso_app_plan::ResolvedAppPlan {
-    let ingress = ModuleInstancePlan::new("ingress", "fixture.ingress")
+    let ingress = PluginInstancePlan::new("ingress", "fixture.ingress")
         .with_requirement(CapabilityRequirementPlan::one(AUTH_ID, AUTH_VERSION))
         .with_requirement(CapabilityRequirementPlan::one(
             CAPABILITY_ID,
             DESCRIPTOR_VERSION,
         ));
-    let auth = ModuleInstancePlan::new("auth", "fixture.auth").with_capability(
+    let auth = PluginInstancePlan::new("auth", "fixture.auth").with_capability(
         CapabilityEndpointPlan::new(AUTH_ID, AUTH_VERSION, [AUTHENTICATE_OPERATION]),
     );
-    let target = ModuleInstancePlan::new("target", "fixture.bun.secure-greeting")
+    let target = PluginInstancePlan::new("target", "fixture.bun.secure-greeting")
         .with_entrypoint(fixture().to_string_lossy())
         .with_execution_class(ExecutionClassId::bun_child_process())
         .with_capability(CapabilityEndpointPlan::new(
@@ -238,7 +238,7 @@ fn run(
 ) -> Result<Result<GreetResponse, GreetError>, RuntimeFailure> {
     let issuer = ActorAssertionIssuer::new("auth.users", b"shared-auth-key");
     let auth = NativeAuthProvider { issuer };
-    let native = NativeModuleRegistry::new()
+    let native = NativePluginRegistry::new()
         .with_factory(NativeFactory {
             package: "fixture.ingress",
             auth: auth.clone(),

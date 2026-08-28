@@ -1,4 +1,4 @@
-import { defineModule, serve } from "@lenso/bun-module";
+import { definePlugin, serve } from "@lenso/bun-plugin";
 import {
   bindProvider,
   type Provider,
@@ -20,7 +20,7 @@ const greeting: Provider = {
 };
 
 serve(
-  defineModule({
+  definePlugin({
     providers: [bindProvider(greeting)],
   }),
 );

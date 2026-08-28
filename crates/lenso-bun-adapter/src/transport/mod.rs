@@ -124,14 +124,14 @@ impl ProcessState {
                         });
                     match result {
                         Ok(Some(status)) => {
-                            monitor.mark_dead(RuntimeFailure::ModuleFailure {
+                            monitor.mark_dead(RuntimeFailure::PluginFailure {
                                 detail: format!("Bun process exited with status {status}"),
                             });
                             break;
                         }
                         Ok(None) => thread::sleep(Duration::from_millis(10)),
                         Err(detail) => {
-                            monitor.mark_dead(RuntimeFailure::ModuleFailure { detail });
+                            monitor.mark_dead(RuntimeFailure::PluginFailure { detail });
                             break;
                         }
                     }
@@ -187,13 +187,13 @@ impl ProcessState {
             .and_then(|mut child| {
                 child
                     .try_wait()
-                    .map_err(|error| RuntimeFailure::ModuleFailure {
+                    .map_err(|error| RuntimeFailure::PluginFailure {
                         detail: format!("Bun process wait failed: {error}"),
                     })
             });
         match result {
             Ok(Some(status)) => {
-                let failure = RuntimeFailure::ModuleFailure {
+                let failure = RuntimeFailure::PluginFailure {
                     detail: format!("Bun process exited with status {status}"),
                 };
                 self.mark_dead(failure.clone());
@@ -486,7 +486,7 @@ impl Future for StreamCall {
             }
             Poll::Ready(Err(_)) => {
                 this.receiver.take();
-                Poll::Ready(Err(RuntimeFailure::ModuleFailure {
+                Poll::Ready(Err(RuntimeFailure::PluginFailure {
                     detail: "Bun stream response channel closed".to_owned(),
                 }))
             }
@@ -534,7 +534,7 @@ impl Future for WireCall {
             }
             Poll::Ready(Err(_)) => {
                 this.receiver.take();
-                Poll::Ready(Err(RuntimeFailure::ModuleFailure {
+                Poll::Ready(Err(RuntimeFailure::PluginFailure {
                     detail: "Bun transport response channel closed".to_owned(),
                 }))
             }
@@ -582,7 +582,7 @@ fn build_json_rpc_client(
         .request_timeout(HTTP_CONNECT_TIMEOUT)
         .max_concurrent_requests(queue_capacity.max(1).saturating_add(1))
         .build(format!("http://{address}"))
-        .map_err(|error| RuntimeFailure::ModuleFailure {
+        .map_err(|error| RuntimeFailure::PluginFailure {
             detail: format!("failed to build Bun JSON-RPC client: {error}"),
         })
 }
@@ -616,7 +616,7 @@ fn json_rpc_failure(
     if oversized {
         return RuntimeFailure::ProtocolViolation { capability };
     }
-    RuntimeFailure::ModuleFailure {
+    RuntimeFailure::PluginFailure {
         detail: format!("Bun JSON-RPC {operation} failed: {error}"),
     }
 }
@@ -628,7 +628,7 @@ pub(crate) fn spawn_process(
     command.stderr(std::process::Stdio::piped());
     let mut child = command
         .spawn()
-        .map_err(|error| RuntimeFailure::ModuleFailure {
+        .map_err(|error| RuntimeFailure::PluginFailure {
             detail: format!("failed to start Bun child process: {error}"),
         })?;
     if let Some(stderr) = child.stderr.take() {
@@ -682,7 +682,7 @@ pub(crate) fn open_transport(
                 }
                 Err(_) => {
                     process.stop();
-                    return Err(RuntimeFailure::ModuleFailure {
+                    return Err(RuntimeFailure::PluginFailure {
                         detail: "Bun JSON-RPC process readiness timed out".to_owned(),
                     });
                 }
@@ -706,7 +706,7 @@ fn read_ready_address(stdout: ChildStdout) -> Result<SocketAddr, RuntimeFailure>
         line.clear();
         reader
             .read_line(&mut line)
-            .map_err(|error| RuntimeFailure::ModuleFailure {
+            .map_err(|error| RuntimeFailure::PluginFailure {
                 detail: format!("failed to read Bun JSON-RPC readiness: {error}"),
             })?;
         let Some(port) = line.strip_prefix("LENSO_READY ") else {
@@ -715,16 +715,16 @@ fn read_ready_address(stdout: ChildStdout) -> Result<SocketAddr, RuntimeFailure>
         let port: u16 = port.trim().parse().map_err(|_| protocol_violation(None))?;
         let address = ("127.0.0.1", port)
             .to_socket_addrs()
-            .map_err(|_| RuntimeFailure::ModuleFailure {
+            .map_err(|_| RuntimeFailure::PluginFailure {
                 detail: "Bun JSON-RPC readiness address could not be resolved".to_owned(),
             })?
             .next()
-            .ok_or_else(|| RuntimeFailure::ModuleFailure {
+            .ok_or_else(|| RuntimeFailure::PluginFailure {
                 detail: "Bun JSON-RPC readiness address was empty".to_owned(),
             })?;
         return Ok(address);
     }
-    Err(RuntimeFailure::ModuleFailure {
+    Err(RuntimeFailure::PluginFailure {
         detail: "Bun JSON-RPC process did not announce readiness".to_owned(),
     })
 }
@@ -747,7 +747,7 @@ mod tests {
         futures::executor::block_on(waiter).expect("exit should wake the waiter");
         assert!(matches!(
             process.failure(),
-            Some(RuntimeFailure::ModuleFailure { .. })
+            Some(RuntimeFailure::PluginFailure { .. })
         ));
     }
 
@@ -786,7 +786,7 @@ mod tests {
 
         assert!(matches!(
             process.failure_or_exit(),
-            Some(RuntimeFailure::ModuleFailure { .. })
+            Some(RuntimeFailure::PluginFailure { .. })
         ));
     }
 }

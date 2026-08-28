@@ -19,7 +19,7 @@ export interface InvocationContext {
   readonly extensions?: Record<string, unknown>;
 }
 
-export type RuntimeFailure = { readonly kind: "unavailable" | "unknown_operation" | "ambiguous_binding" | "protocol_violation" | "missing_module_factory" | "unavailable_execution_class" | "invalid_resolved_plan" | "admission_closed" | "resource_exhausted" | "deadline_exceeded" | "cancelled" | "internal" | "module_failure" | "module_restart_exhausted"; readonly detail?: unknown; readonly [key: string]: unknown };
+export type RuntimeFailure = { readonly kind: "unavailable" | "unknown_operation" | "ambiguous_binding" | "protocol_violation" | "missing_plugin_factory" | "unavailable_execution_class" | "invalid_resolved_plan" | "admission_closed" | "resource_exhausted" | "deadline_exceeded" | "cancelled" | "internal" | "plugin_failure" | "plugin_restart_exhausted"; readonly detail?: unknown; readonly [key: string]: unknown };
 export type UnknownDomainError = { readonly code: string; readonly payload?: unknown; readonly [key: string]: unknown };
 
 export type StreamEvent<Message, DomainError> =

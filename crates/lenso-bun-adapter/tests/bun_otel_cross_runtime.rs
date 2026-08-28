@@ -7,7 +7,7 @@ use std::{
 
 use lenso_app_plan::{
     AppComposition, CapabilityBinding, CapabilityEndpointPlan, CapabilityRequirementPlan,
-    ExecutionClassId, ModuleInstancePlan,
+    ExecutionClassId, PluginInstancePlan,
 };
 use lenso_bun_adapter::{
     BunAdapter, BunCapabilityCodec, BunProviderDescriptor, BunProviderHandler, BunProviderServer,
@@ -17,7 +17,7 @@ use lenso_kernel::{
     CancellationToken, DeterministicDriver, ExecutionAdapterCatalog, InvocationContext, Kernel,
     RequestCapability, RuntimeFailure, SealedInvocationExtension, ShutdownOutcome,
 };
-use lenso_otel_module::{TraceContext, TraceContextPropagator};
+use lenso_otel_plugin::{TraceContext, TraceContextPropagator};
 use serde::{Deserialize, Serialize};
 
 const CAPABILITY_ID: &str = "example.trace@1";
@@ -140,11 +140,11 @@ fn fixture(name: &str) -> PathBuf {
 
 fn plan(script: &Path) -> lenso_app_plan::ResolvedAppPlan {
     let endpoint = CapabilityEndpointPlan::new(CAPABILITY_ID, DESCRIPTOR_VERSION, [OPERATION]);
-    let provider = ModuleInstancePlan::new("bun-provider", "fixture.bun.trace")
+    let provider = PluginInstancePlan::new("bun-provider", "fixture.bun.trace")
         .with_entrypoint(script.to_string_lossy())
         .with_execution_class(ExecutionClassId::bun_child_process())
         .with_capability(endpoint);
-    let consumer = ModuleInstancePlan::new("bun-consumer", "fixture.bun.trace-consumer")
+    let consumer = PluginInstancePlan::new("bun-consumer", "fixture.bun.trace-consumer")
         .with_entrypoint(script.to_string_lossy())
         .with_execution_class(ExecutionClassId::bun_child_process())
         .with_requirement(CapabilityRequirementPlan::one(
@@ -229,7 +229,7 @@ impl BunProviderHandler for RustTraceProvider {
         } = request;
         let Some(extension) = extensions
             .into_iter()
-            .find(|extension| extension.key == lenso_otel_module::TRACE_CONTEXT_EXTENSION_KEY)
+            .find(|extension| extension.key == lenso_otel_plugin::TRACE_CONTEXT_EXTENSION_KEY)
         else {
             return BunResponse::Runtime(RuntimeFailure::ProtocolViolation {
                 capability: CAPABILITY_ID,

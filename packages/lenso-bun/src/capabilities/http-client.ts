@@ -116,7 +116,7 @@ export function bindClientProvider(
           }
           return { kind: "runtime", failure: result.error.error };
         } catch (error) {
-          return { kind: "runtime", failure: { kind: "module_failure", detail: providerErrorMessage(error) } };
+          return { kind: "runtime", failure: { kind: "plugin_failure", detail: providerErrorMessage(error) } };
         }
       }
         default:

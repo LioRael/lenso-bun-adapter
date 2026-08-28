@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import type { InvocationContext, Uint64 } from "@lenso/contract-runtime";
-import { defineModule, startModule } from "../src/index.ts";
+import { definePlugin, startPlugin } from "../src/index.ts";
 import {
   bindJobsProvider,
   CAPABILITY_ID,
@@ -48,7 +48,7 @@ async function rpc(
 
 test("binds the official Jobs Capability without a repository-local import", async () => {
   const binding = bindJobsProvider(provider);
-  const definition = defineModule({ providers: [binding] });
+  const definition = definePlugin({ providers: [binding] });
   expect(definition.providers).toHaveLength(1);
   expect(binding.descriptor).toEqual({
     capability_id: CAPABILITY_ID,
@@ -80,7 +80,7 @@ test("binds the official Jobs Capability without a repository-local import", asy
 
 test("serves the centralized Jobs projection through the Bun runtime", async () => {
   const binding = bindJobsProvider(provider);
-  const server = startModule(defineModule({ providers: [binding] }));
+  const server = startPlugin(definePlugin({ providers: [binding] }));
   try {
     const handshake = await rpc(server.port, 1, "lenso.handshake", {
       protocol_version: 1,

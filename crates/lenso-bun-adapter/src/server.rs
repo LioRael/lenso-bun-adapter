@@ -76,7 +76,7 @@ pub struct BunRequest {
     pub operation: String,
     /// Absolute Driver-monotonic deadline encoded by the consumer, when present.
     pub deadline_nanos: Option<u64>,
-    /// Resolved caller Module Instance, when present.
+    /// Resolved caller Plugin Instance, when present.
     pub caller_instance: Option<String>,
     /// Generated portable JSON request value.
     pub payload: Value,
@@ -488,7 +488,7 @@ impl BunProviderServer {
                             let server = jsonrpsee::server::ServerBuilder::with_config(config)
                                 .build(("127.0.0.1", 0))
                                 .await
-                                .map_err(|error| RuntimeFailure::ModuleFailure {
+                                .map_err(|error| RuntimeFailure::PluginFailure {
                                     detail: format!("failed to bind Bun provider bridge: {error}"),
                                 })?;
                             let address =
@@ -727,7 +727,7 @@ fn handle_request(request: WireRequest, state: &ProviderState) -> WireOutcome {
             .invoke(BunRequest::from_wire(request, cancellation))
     }))
     .unwrap_or_else(|_| {
-        BunResponse::Runtime(RuntimeFailure::ModuleFailure {
+        BunResponse::Runtime(RuntimeFailure::PluginFailure {
             detail: "Bun provider handler panicked".to_owned(),
         })
     });
@@ -897,7 +897,7 @@ fn handle_stream_open(open: WireStreamOpen, state: &ProviderState) -> WireStream
             .open_stream(BunRequest::from_wire(open, cancellation))
     }))
     .unwrap_or_else(|_| {
-        BunStreamOpenResponse::Runtime(RuntimeFailure::ModuleFailure {
+        BunStreamOpenResponse::Runtime(RuntimeFailure::PluginFailure {
             detail: "Bun provider stream handler panicked".to_owned(),
         })
     });

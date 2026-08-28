@@ -1,6 +1,6 @@
 # @lenso/bun
 
-The supported Bun authoring SDK for Lenso Modules. It combines the Bun Module
+The supported Bun authoring SDK for Lenso Plugins. It combines the Bun Plugin
 runtime with generated projections of official portable Capability contracts.
 Capability semantics remain in their owning repositories; this package owns
 their directly consumable Bun projection. `capabilities.lock.json` pins every
@@ -8,11 +8,11 @@ source repository revision and the checked Descriptor/Schema snapshot used to
 reproduce it.
 
 ```ts
-import { defineModule, serve } from "@lenso/bun";
+import { definePlugin, serve } from "@lenso/bun";
 import { bindJobsProvider } from "@lenso/bun/capabilities/jobs";
 import { jobs } from "./jobs.ts"; // Implements JobsProvider.
 
-serve(defineModule({ providers: [bindJobsProvider(jobs)] }));
+serve(definePlugin({ providers: [bindJobsProvider(jobs)] }));
 ```
 
 Run `bun run capabilities:check` with `lenso-contract-codegen` on `PATH` to
