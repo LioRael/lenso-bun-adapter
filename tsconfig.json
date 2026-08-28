@@ -12,6 +12,7 @@
   },
   "include": [
     "fixtures/bun/sdk-request-provider.ts",
+    "fixtures/bun/sdk-request-plugin.ts",
     "packages/lenso-bun/src/**/*.ts",
     "packages/lenso-bun/test/**/*.ts",
     "packages/lenso-bun-plugin/src/**/*.ts",

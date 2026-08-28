@@ -16,20 +16,24 @@ semantics or product Plugins.
 
 ## Author a Bun Plugin
 
-Install one SDK, implement an official generated Provider interface, and hand
-its binding to the runtime:
+Install one SDK, implement an official generated Provider interface, and export
+one Plugin definition. The generated entrypoint owns runtime startup:
 
 ```sh
 bun add @lenso/bun
 ```
 
 ```ts
-import { definePlugin, serve } from "@lenso/bun";
+import { definePlugin } from "@lenso/bun";
 import { bindJobsProvider } from "@lenso/bun/capabilities/jobs";
 import { jobs } from "./jobs.ts"; // Implements JobsProvider.
 
-serve(definePlugin({ providers: [bindJobsProvider(jobs)] }));
+export default definePlugin({ providers: [bindJobsProvider(jobs)] });
 ```
+
+Plugin projects created by Lenso contain a generated entrypoint that imports
+this default export and starts the runtime. Authors do not call `serve`, handle
+the process handshake, or implement the transport.
 
 Custom Capability contracts can still be generated during authoring. Official
 Capability projections belong in `@lenso/bun`, not beside Rust crate source.
