@@ -7,7 +7,7 @@
       "dependencies": {
         "@lenso/bun": "workspace:*",
         "@lenso/bun-plugin": "workspace:*",
-        "@lenso/contract-runtime": "0.1.0",
+        "@lenso/contract-runtime": "0.2.0",
       },
       "devDependencies": {
         "@types/bun": "1.4.0",
@@ -19,7 +19,7 @@
       "version": "0.1.1",
       "dependencies": {
         "@lenso/bun-plugin": "0.1.0",
-        "@lenso/contract-runtime": "0.1.0",
+        "@lenso/contract-runtime": "0.2.0",
       },
       "devDependencies": {
         "@types/bun": "1.4.0",
@@ -30,7 +30,7 @@
       "name": "@lenso/bun-plugin",
       "version": "0.1.0",
       "dependencies": {
-        "@lenso/contract-runtime": "0.1.0",
+        "@lenso/contract-runtime": "0.2.0",
       },
       "devDependencies": {
         "@types/bun": "1.4.0",
@@ -43,7 +43,7 @@
 
     "@lenso/bun-plugin": ["@lenso/bun-plugin@workspace:packages/lenso-bun-plugin"],
 
-    "@lenso/contract-runtime": ["@lenso/contract-runtime@0.1.0", "", {}, "sha512-+tz+mSXRWC5+ptKbCJqc2QX31SfYpmzel3B+VgKOviEtSDUeAKfFkSD/n+3iK9DztH3HuDpCSgKVPlD0rpSNyg=="],
+    "@lenso/contract-runtime": ["@lenso/contract-runtime@0.2.0", "", {}, "sha512-y0O2wDwpacXmqO1lt1yL0j6j+U9wI5Jkz0iToNXpYW24Ct97NgtnCFp9WxWXvDj268jWFs0thP5GZlm1r2zwRg=="],
 
     "@types/bun": ["@types/bun@1.4.0", "", { "dependencies": { "bun-types": "1.4.0" } }, "sha512-K+lZULY23vRgK/CfTjFIV+tyifaNdSMlPh9j+6mQ/cLfpOznLyAuzgV/JQysyECpkBQLVMSyvjlr2fBUSA9wFQ=="],
 

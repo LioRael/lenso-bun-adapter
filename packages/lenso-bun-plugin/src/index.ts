@@ -174,8 +174,8 @@ export function startPlugin(
       provider,
     ]),
   );
-  const moduleEndpoints = definition.providers.map(({ descriptor }) => descriptor);
-  const expectedEndpoints = options.expectedEndpoints ?? moduleEndpoints;
+  const pluginEndpoints = definition.providers.map(({ descriptor }) => descriptor);
+  const expectedEndpoints = options.expectedEndpoints ?? pluginEndpoints;
   const activeRequests = new Map<number, RequestState>();
   const retiredRequestIds = new Set<number>();
   let session: string | undefined;
@@ -225,7 +225,7 @@ export function startPlugin(
           activeRequests.size === 0 &&
           validHandshake(handshake, maxFrameBytes) &&
           sameEndpoints(handshake.endpoints, expectedEndpoints) &&
-          sameEndpoints(handshake.endpoints, moduleEndpoints);
+          sameEndpoints(handshake.endpoints, pluginEndpoints);
         if (accepted) {
           admittedHandshake = handshake;
           session = crypto.randomUUID();

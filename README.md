@@ -1,6 +1,6 @@
 # Lenso Bun SDK and Runtime
 
-The Bun authoring and execution surface for Lenso vNext Modules:
+The Bun authoring and execution surface for Lenso Plugins:
 
 - `@lenso/bun` is the supported authoring SDK. It combines the runtime with
   directly consumable projections of official portable Capabilities.
@@ -12,7 +12,7 @@ The Bun authoring and execution surface for Lenso vNext Modules:
   the Rust Kernel and preserve low-level wire conformance coverage.
 
 This repository consumes released Lenso core packages and does not own Kernel
-semantics or product Modules.
+semantics or product Plugins.
 
 ## Author a Bun Plugin
 

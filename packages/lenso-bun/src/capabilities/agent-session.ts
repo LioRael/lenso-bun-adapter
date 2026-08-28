@@ -18,13 +18,13 @@ export type UnknownDomainError = lensoContractRuntime.UnknownDomainError;
 export type StreamEvent<Message, DomainError> = lensoContractRuntime.StreamEvent<Message, DomainError>;
 export type StreamSession<Message, DomainError> = lensoContractRuntime.StreamSession<Message, DomainError>;
 
-export interface AppendRequest {
-  events: Array<AppendRequestEventsItem>;
+export interface AppendSessionRequest {
+  events: Array<AppendSessionRequestEventsItem>;
   expected_revision: Uint64;
   session_id: string;
 }
 
-export interface AppendRequestEventsItem {
+export interface AppendSessionRequestEventsItem {
   event_id: string;
   kind: "session_created" | "turn_started" | "model_requested" | "model_output" | "tool_requested" | "tool_result" | "turn_completed" | "turn_failed" | "turn_cancelled";
   occurred_at: Timestamp;
@@ -32,7 +32,7 @@ export interface AppendRequestEventsItem {
   turn_id?: string;
 }
 
-export interface AppendResponse {
+export interface AppendSessionResponse {
   revision: Uint64;
 }
 
@@ -40,29 +40,29 @@ export interface AppendErrorRevisionConflictPayload {
   current_revision: Uint64;
 }
 
-export interface OpenRequest {
+export interface OpenSessionRequest {
   session_id?: string;
 }
 
-export interface OpenResponse {
+export interface OpenSessionResponse {
   created: boolean;
   revision: Uint64;
   session_id: string;
 }
 
-export interface ReadRequest {
+export interface ReadSessionRequest {
   after_revision: Uint64;
   limit: number;
   session_id: string;
 }
 
-export interface ReadResponse {
-  events: Array<ReadResponseEventsItem>;
+export interface ReadSessionResponse {
+  events: Array<ReadSessionResponseEventsItem>;
   revision: Uint64;
   session_id: string;
 }
 
-export interface ReadResponseEventsItem {
+export interface ReadSessionResponseEventsItem {
   event_id: string;
   kind: "session_created" | "turn_started" | "model_requested" | "model_output" | "tool_requested" | "tool_result" | "turn_completed" | "turn_failed" | "turn_cancelled";
   occurred_at: Timestamp;
@@ -73,45 +73,45 @@ export interface ReadResponseEventsItem {
 
 export type AppendError = "invalid_event" | "not_found" | { readonly code: "revision_conflict"; readonly payload: AppendErrorRevisionConflictPayload } | UnknownDomainError;
 export type AppendInvocationError = { readonly kind: "domain"; readonly error: AppendError } | { readonly kind: "runtime"; readonly error: RuntimeFailure };
-export type AppendResult = { readonly ok: true; readonly value: AppendResponse } | { readonly ok: false; readonly error: AppendInvocationError };
+export type AppendResult = { readonly ok: true; readonly value: AppendSessionResponse } | { readonly ok: false; readonly error: AppendInvocationError };
 export type OpenError = "invalid_session_id" | "not_found" | UnknownDomainError;
 export type OpenInvocationError = { readonly kind: "domain"; readonly error: OpenError } | { readonly kind: "runtime"; readonly error: RuntimeFailure };
-export type OpenResult = { readonly ok: true; readonly value: OpenResponse } | { readonly ok: false; readonly error: OpenInvocationError };
+export type OpenResult = { readonly ok: true; readonly value: OpenSessionResponse } | { readonly ok: false; readonly error: OpenInvocationError };
 export type ReadError = "invalid_cursor" | "not_found" | UnknownDomainError;
 export type ReadInvocationError = { readonly kind: "domain"; readonly error: ReadError } | { readonly kind: "runtime"; readonly error: RuntimeFailure };
-export type ReadResult = { readonly ok: true; readonly value: ReadResponse } | { readonly ok: false; readonly error: ReadInvocationError };
-export function encodeAppendRequest(value: AppendRequest): string { return lensoContractRuntime.encodePortableJson(value, "request"); }
-export function decodeAppendRequest(wire: string): AppendRequest { return lensoContractRuntime.decodePortableJson<AppendRequest>(wire); }
-export function encodeAppendResponse(value: AppendResponse): string { return lensoContractRuntime.encodePortableJson(value, "response"); }
-export function decodeAppendResponse(wire: string): AppendResponse { return lensoContractRuntime.decodePortableJson<AppendResponse>(wire); }
+export type ReadResult = { readonly ok: true; readonly value: ReadSessionResponse } | { readonly ok: false; readonly error: ReadInvocationError };
+export function encodeAppendRequest(value: AppendSessionRequest): string { return lensoContractRuntime.encodePortableJson(value, "request"); }
+export function decodeAppendRequest(wire: string): AppendSessionRequest { return lensoContractRuntime.decodePortableJson<AppendSessionRequest>(wire); }
+export function encodeAppendResponse(value: AppendSessionResponse): string { return lensoContractRuntime.encodePortableJson(value, "response"); }
+export function decodeAppendResponse(wire: string): AppendSessionResponse { return lensoContractRuntime.decodePortableJson<AppendSessionResponse>(wire); }
 export function encodeAppendError(value: AppendError): string { return lensoContractRuntime.encodePortableJson(value, "Domain Error"); }
 export function decodeAppendError(wire: string): AppendError { return lensoContractRuntime.decodeDomainError<AppendError>(wire, ["invalid_event", "not_found"]); }
 
-export function encodeOpenRequest(value: OpenRequest): string { return lensoContractRuntime.encodePortableJson(value, "request"); }
-export function decodeOpenRequest(wire: string): OpenRequest { return lensoContractRuntime.decodePortableJson<OpenRequest>(wire); }
-export function encodeOpenResponse(value: OpenResponse): string { return lensoContractRuntime.encodePortableJson(value, "response"); }
-export function decodeOpenResponse(wire: string): OpenResponse { return lensoContractRuntime.decodePortableJson<OpenResponse>(wire); }
+export function encodeOpenRequest(value: OpenSessionRequest): string { return lensoContractRuntime.encodePortableJson(value, "request"); }
+export function decodeOpenRequest(wire: string): OpenSessionRequest { return lensoContractRuntime.decodePortableJson<OpenSessionRequest>(wire); }
+export function encodeOpenResponse(value: OpenSessionResponse): string { return lensoContractRuntime.encodePortableJson(value, "response"); }
+export function decodeOpenResponse(wire: string): OpenSessionResponse { return lensoContractRuntime.decodePortableJson<OpenSessionResponse>(wire); }
 export function encodeOpenError(value: OpenError): string { return lensoContractRuntime.encodePortableJson(value, "Domain Error"); }
 export function decodeOpenError(wire: string): OpenError { return lensoContractRuntime.decodeDomainError<OpenError>(wire, ["invalid_session_id", "not_found"]); }
 
-export function encodeReadRequest(value: ReadRequest): string { return lensoContractRuntime.encodePortableJson(value, "request"); }
-export function decodeReadRequest(wire: string): ReadRequest { return lensoContractRuntime.decodePortableJson<ReadRequest>(wire); }
-export function encodeReadResponse(value: ReadResponse): string { return lensoContractRuntime.encodePortableJson(value, "response"); }
-export function decodeReadResponse(wire: string): ReadResponse { return lensoContractRuntime.decodePortableJson<ReadResponse>(wire); }
+export function encodeReadRequest(value: ReadSessionRequest): string { return lensoContractRuntime.encodePortableJson(value, "request"); }
+export function decodeReadRequest(wire: string): ReadSessionRequest { return lensoContractRuntime.decodePortableJson<ReadSessionRequest>(wire); }
+export function encodeReadResponse(value: ReadSessionResponse): string { return lensoContractRuntime.encodePortableJson(value, "response"); }
+export function decodeReadResponse(wire: string): ReadSessionResponse { return lensoContractRuntime.decodePortableJson<ReadSessionResponse>(wire); }
 export function encodeReadError(value: ReadError): string { return lensoContractRuntime.encodePortableJson(value, "Domain Error"); }
 export function decodeReadError(wire: string): ReadError { return lensoContractRuntime.decodeDomainError<ReadError>(wire, ["invalid_cursor", "not_found"]); }
 
 
 export interface SessionClient {
-  append(request: AppendRequest, context?: InvocationContext): Promise<AppendResult>;
-  open(request: OpenRequest, context?: InvocationContext): Promise<OpenResult>;
-  read(request: ReadRequest, context?: InvocationContext): Promise<ReadResult>;
+  append(request: AppendSessionRequest, context?: InvocationContext): Promise<AppendResult>;
+  open(request: OpenSessionRequest, context?: InvocationContext): Promise<OpenResult>;
+  read(request: ReadSessionRequest, context?: InvocationContext): Promise<ReadResult>;
 }
 
 export interface SessionProvider {
-  append(context: InvocationContext, request: AppendRequest): Promise<AppendResult>;
-  open(context: InvocationContext, request: OpenRequest): Promise<OpenResult>;
-  read(context: InvocationContext, request: ReadRequest): Promise<ReadResult>;
+  append(context: InvocationContext, request: AppendSessionRequest): Promise<AppendResult>;
+  open(context: InvocationContext, request: OpenSessionRequest): Promise<OpenResult>;
+  read(context: InvocationContext, request: ReadSessionRequest): Promise<ReadResult>;
 }
 
 export type ProviderDispatchOutcome =
@@ -154,7 +154,7 @@ export function bindSessionProvider(
     async invokeRequest(operation, context, payload) {
       switch (operation) {
       case "append": {
-        let request: AppendRequest;
+        let request: AppendSessionRequest;
         try {
           request = decodeAppendRequest(lensoContractRuntime.encodePortableJson(payload, "request"));
         } catch (error) {
@@ -174,7 +174,7 @@ export function bindSessionProvider(
         }
       }
       case "open": {
-        let request: OpenRequest;
+        let request: OpenSessionRequest;
         try {
           request = decodeOpenRequest(lensoContractRuntime.encodePortableJson(payload, "request"));
         } catch (error) {
@@ -194,7 +194,7 @@ export function bindSessionProvider(
         }
       }
       case "read": {
-        let request: ReadRequest;
+        let request: ReadSessionRequest;
         try {
           request = decodeReadRequest(lensoContractRuntime.encodePortableJson(payload, "request"));
         } catch (error) {
