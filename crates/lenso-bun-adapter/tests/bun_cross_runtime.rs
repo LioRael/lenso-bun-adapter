@@ -37,10 +37,43 @@ struct GreetResponse {
     message: String,
 }
 
-#[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Clone, Debug, PartialEq)]
 enum GreetError {
     EmptyName,
+    Unknown(serde_json::Value),
+}
+
+impl serde::Serialize for GreetError {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            Self::EmptyName => serializer.serialize_str("empty_name"),
+            Self::Unknown(value) => serde::Serialize::serialize(value, serializer),
+        }
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for GreetError {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = <serde_json::Value as serde::Deserialize>::deserialize(deserializer)?;
+        match &value {
+            serde_json::Value::String(code) if code == "empty_name" => Ok(Self::EmptyName),
+            serde_json::Value::String(_) => Ok(Self::Unknown(value)),
+            serde_json::Value::Object(object)
+                if object.get("code").is_some_and(serde_json::Value::is_string) =>
+            {
+                Ok(Self::Unknown(value))
+            }
+            other => Err(serde::de::Error::custom(format!(
+                "Domain Error must be a string or object with a string code, got {other}"
+            ))),
+        }
+    }
 }
 
 #[derive(Debug)]
