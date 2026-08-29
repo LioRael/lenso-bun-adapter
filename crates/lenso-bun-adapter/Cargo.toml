@@ -10,15 +10,15 @@ description = "Bun process Execution Adapter for Lenso vNext."
 [dependencies]
 futures.workspace = true
 jsonrpsee = { version = "0.26", default-features = false, features = ["http-client", "server"] }
-lenso-app-plan = { version = "0.3.0", git = "https://github.com/LioRael/lenso", rev = "b8c7d3bfd7b900965f7782016b92f6c891fa98e5" }
-lenso-kernel = { version = "0.2.0", git = "https://github.com/LioRael/lenso", rev = "b8c7d3bfd7b900965f7782016b92f6c891fa98e5" }
+lenso-app-plan = { version = "0.3.0", git = "https://github.com/LioRael/lenso", rev = "8599db7e4a214ed92f32089f81d14c833d4becf6" }
+lenso-kernel = { version = "0.2.0", git = "https://github.com/LioRael/lenso", rev = "8599db7e4a214ed92f32089f81d14c833d4becf6" }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
-lenso-native-adapter = { version = "0.3.0", git = "https://github.com/LioRael/lenso-runtime-rust", rev = "6bd5b88f3c6610581fcc4306c6cf356f71f7c611" }
+lenso-native-adapter = { version = "0.3.0", git = "https://github.com/LioRael/lenso-runtime-rust", rev = "89815107385475c8b5be378bdcf5e21aa74e02f0" }
 time.workspace = true
 
 [lints]
