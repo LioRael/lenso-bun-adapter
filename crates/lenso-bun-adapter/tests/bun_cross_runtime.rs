@@ -12,13 +12,10 @@ use lenso_app_plan::{
     AppComposition, CapabilityBinding, CapabilityEndpointPlan, CapabilityRequirementPlan,
     ExecutionClassId, PluginInstancePlan, RestartPolicy,
 };
-use lenso_capability_greeting::{
-    CAPABILITY_ID, DESCRIPTOR_VERSION, GreetError, GreetRequest, GreetResponse, Greeting,
-    decode_greet_error, decode_greet_response, encode_greet_request,
-};
 use lenso_kernel::{
     CancellationToken, DeterministicDriver, EventAdmission, EventCapability,
-    ExecutionAdapterCatalog, Kernel, RuntimeDriver, RuntimeFailure, StreamCapability, StreamEvent,
+    ExecutionAdapterCatalog, InvocationContext, Kernel, NativeRequestEndpoint, NativeRequestFuture,
+    RequestCapability, RuntimeDriver, RuntimeFailure, StreamCapability, StreamEvent,
 };
 
 use lenso_bun_adapter::{
@@ -26,6 +23,93 @@ use lenso_bun_adapter::{
     BunProviderDescriptor, BunProviderHandler, BunProviderServer, BunProviderStream, BunRequest,
     BunResponse, BunStreamAction, BunStreamEvent, BunStreamOpenResponse, BunStreamReceive, BunWire,
 };
+
+const CAPABILITY_ID: &str = "example.greeting@1";
+const DESCRIPTOR_VERSION: &str = "1.0.0";
+
+#[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
+struct GreetRequest {
+    name: String,
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
+struct GreetResponse {
+    message: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum GreetError {
+    EmptyName,
+    Unknown(serde_json::Value),
+}
+
+impl serde::Serialize for GreetError {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            Self::EmptyName => serializer.serialize_str("empty_name"),
+            Self::Unknown(value) => serde::Serialize::serialize(value, serializer),
+        }
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for GreetError {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = <serde_json::Value as serde::Deserialize>::deserialize(deserializer)?;
+        match &value {
+            serde_json::Value::String(code) if code == "empty_name" => Ok(Self::EmptyName),
+            serde_json::Value::String(_) => Ok(Self::Unknown(value)),
+            serde_json::Value::Object(object)
+                if object.get("code").is_some_and(serde_json::Value::is_string) =>
+            {
+                Ok(Self::Unknown(value))
+            }
+            other => Err(serde::de::Error::custom(format!(
+                "Domain Error must be a string or object with a string code, got {other}"
+            ))),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct Greeting;
+
+impl RequestCapability for Greeting {
+    type Request = GreetRequest;
+    type Response = GreetResponse;
+    type DomainError = GreetError;
+
+    const ID: &'static str = CAPABILITY_ID;
+    const DESCRIPTOR_VERSION: &'static str = DESCRIPTOR_VERSION;
+
+    fn invoke_native(
+        endpoint: &dyn NativeRequestEndpoint,
+        operation: &str,
+        request: Self::Request,
+        context: InvocationContext,
+    ) -> NativeRequestFuture<Self> {
+        lenso_kernel::invoke_typed_or_erased_native_request::<Self>(
+            endpoint, operation, request, context,
+        )
+    }
+}
+
+fn encode_greet_request(value: &GreetRequest) -> Result<String, serde_json::Error> {
+    serde_json::to_string(value)
+}
+
+fn decode_greet_response(wire: &str) -> Result<GreetResponse, serde_json::Error> {
+    serde_json::from_str(wire)
+}
+
+fn decode_greet_error(wire: &str) -> Result<GreetError, serde_json::Error> {
+    serde_json::from_str(wire)
+}
 
 #[derive(Debug)]
 struct GreetingCodec;
