@@ -81,7 +81,7 @@ fn provider_preserves_sealed_extensions_and_rejects_duplicate_keys() {
     assert!(matches!(accepted_outcome, WireOutcome::Success { .. }));
     assert_eq!(
         seen.lock().expect("extension capture lock").as_slice(),
-        &[assertion.clone()]
+        std::slice::from_ref(&assertion)
     );
 
     let duplicate_outcome: WireOutcome = runtime

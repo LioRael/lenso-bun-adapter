@@ -251,10 +251,7 @@ pub(crate) fn validate_extensions(
                 || extension.audience.is_empty()
                 || extension.proof.as_deref().is_none_or(str::is_empty)
                 || !extension.audience.contains(&expected_audience)
-                || extension
-                    .audience
-                    .iter()
-                    .any(|audience| audience.is_empty())
+                || extension.audience.iter().any(String::is_empty)
             {
                 return Err(RuntimeFailure::ProtocolViolation {
                     capability: "lenso.bun-process@1",

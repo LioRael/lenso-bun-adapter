@@ -604,13 +604,10 @@ struct RustChatStream {
 
 impl BunProviderStream for RustChatStream {
     fn send(&self, payload: serde_json::Value) -> BunStreamAction {
-        let message = match serde_json::from_value::<ChatMessage>(payload) {
-            Ok(message) => message,
-            Err(_) => {
-                return BunStreamAction::Runtime(RuntimeFailure::ProtocolViolation {
-                    capability: CHAT_CAPABILITY_ID,
-                });
-            }
+        let Ok(message) = serde_json::from_value::<ChatMessage>(payload) else {
+            return BunStreamAction::Runtime(RuntimeFailure::ProtocolViolation {
+                capability: CHAT_CAPABILITY_ID,
+            });
         };
         let Ok(mut state) = self.state.lock() else {
             return BunStreamAction::Runtime(RuntimeFailure::Internal {
@@ -688,13 +685,10 @@ impl BunProviderHandler for RustChatProvider {
                 request_id: request.request_id,
             });
         }
-        let request = match serde_json::from_value::<ChatOpen>(request.payload) {
-            Ok(request) => request,
-            Err(_) => {
-                return BunStreamOpenResponse::Runtime(RuntimeFailure::ProtocolViolation {
-                    capability: CHAT_CAPABILITY_ID,
-                });
-            }
+        let Ok(request) = serde_json::from_value::<ChatOpen>(request.payload) else {
+            return BunStreamOpenResponse::Runtime(RuntimeFailure::ProtocolViolation {
+                capability: CHAT_CAPABILITY_ID,
+            });
         };
         if request.room == "closed" {
             return BunStreamOpenResponse::Domain(serde_json::json!("room_closed"));
@@ -728,8 +722,16 @@ fn greeting_plan_with_consumer(
     provider_script: &Path,
     consumer_script: &Path,
 ) -> lenso_app_plan::ResolvedAppPlan {
-    let endpoint =
-        CapabilityEndpointPlan::new(CAPABILITY_ID, DESCRIPTOR_VERSION, ["greet"]).with_limits(1, 1);
+    greeting_plan_with_concurrency(provider_script, consumer_script, 1)
+}
+
+fn greeting_plan_with_concurrency(
+    provider_script: &Path,
+    consumer_script: &Path,
+    max_concurrency: usize,
+) -> lenso_app_plan::ResolvedAppPlan {
+    let endpoint = CapabilityEndpointPlan::new(CAPABILITY_ID, DESCRIPTOR_VERSION, ["greet"])
+        .with_limits(0, max_concurrency);
     let provider = PluginInstancePlan::new("bun-provider", "fixture.bun.greeting")
         .with_entrypoint(provider_script.to_string_lossy())
         .with_execution_class(ExecutionClassId::bun_child_process())
@@ -759,6 +761,109 @@ fn greeting_plan_with_consumer(
     )
     .resolve()
     .expect("Bun cross-runtime plan should resolve")
+}
+
+#[test]
+#[ignore = "requires Bun; CI runs ignored cross-runtime tests after installing Bun"]
+fn json_rpc_fast_request_is_not_blocked_behind_a_slow_request() {
+    let provider_script = fixture("request-provider.ts");
+    let consumer_script = fixture("request-provider.ts");
+    let driver = DeterministicDriver::new();
+    let adapter = BunAdapter::production(bun_binary()).with_codec(GreetingCodec);
+    let app = driver
+        .run(Kernel::start(
+            greeting_plan_with_concurrency(&provider_script, &consumer_script, 2),
+            driver.clone(),
+            ExecutionAdapterCatalog::single(adapter),
+        ))
+        .expect("Bun App should start");
+    let handle = app
+        .handle::<Greeting>("bun-consumer")
+        .expect("Greeting binding should be available");
+    let first = driver.run(async {
+        let slow = handle.invoke(
+            "greet",
+            GreetRequest {
+                name: "__delay__".to_owned(),
+            },
+        );
+        let fast = handle.invoke(
+            "greet",
+            GreetRequest {
+                name: "Ada".to_owned(),
+            },
+        );
+        futures::pin_mut!(slow, fast);
+        match futures::future::select(slow, fast).await {
+            futures::future::Either::Left(_) => "slow",
+            futures::future::Either::Right((result, slow)) => {
+                assert_eq!(result.unwrap().unwrap().message, "Hello from Bun, Ada!");
+                assert!(slow.await.unwrap().is_ok());
+                "fast"
+            }
+        }
+    });
+    let _ = driver.run(app.shutdown(Duration::from_secs(2)));
+    assert_eq!(first, "fast");
+}
+
+#[test]
+#[ignore = "requires Bun; CI runs ignored cross-runtime tests after installing Bun"]
+fn json_rpc_cancel_control_remains_available_at_request_saturation() {
+    let provider_script = fixture("request-provider.ts");
+    let consumer_script = fixture("request-provider.ts");
+    let driver = DeterministicDriver::new();
+    let adapter = BunAdapter::production(bun_binary())
+        .with_config(
+            BunAdapterConfig::new(bun_binary(), BunWire::JsonRpcHttp)
+                .with_request_queue_capacity(2),
+        )
+        .with_codec(GreetingCodec);
+    let app = driver
+        .run(Kernel::start(
+            greeting_plan_with_concurrency(&provider_script, &consumer_script, 2),
+            driver.clone(),
+            ExecutionAdapterCatalog::single(adapter),
+        ))
+        .expect("Bun App should start");
+    let cancellation = CancellationToken::new();
+    let cancelled_call = app.invoke_with_context::<Greeting>(
+        "bun-consumer",
+        "greet",
+        app.invocation_context(None, cancellation.clone()),
+        GreetRequest {
+            name: "__delay__".to_owned(),
+        },
+    );
+    let other_call = app.invoke::<Greeting>(
+        "bun-consumer",
+        "greet",
+        GreetRequest {
+            name: "__delay__".to_owned(),
+        },
+    );
+    let cancel = async {
+        driver.yield_now().await;
+        driver.yield_now().await;
+        cancellation.cancel();
+    };
+    let (cancelled, other, ()) =
+        driver.run(async { futures::join!(cancelled_call, other_call, cancel) });
+
+    assert!(matches!(cancelled, Err(RuntimeFailure::Cancelled { .. })));
+    assert!(other.unwrap().is_ok());
+    let healthy = driver
+        .run(app.invoke::<Greeting>(
+            "bun-consumer",
+            "greet",
+            GreetRequest {
+                name: "Ada".to_owned(),
+            },
+        ))
+        .unwrap()
+        .unwrap();
+    assert_eq!(healthy.message, "Hello from Bun, Ada!");
+    let _ = driver.run(app.shutdown(Duration::from_secs(2)));
 }
 
 fn event_plan(accepting_script: &Path, rejecting_script: &Path) -> lenso_app_plan::ResolvedAppPlan {
@@ -1057,11 +1162,7 @@ fn both_wires_bound_each_bun_event_subscriber_queue_independently() {
             2,
             "{wire:?} should admit only the active event and its two-slot volatile queue"
         );
-        assert!(
-            accepting_statuses
-                .iter()
-                .any(|status| *status == EventAdmission::Exhausted)
-        );
+        assert!(accepting_statuses.contains(&EventAdmission::Exhausted));
         assert!(
             outcomes
                 .iter()
@@ -1399,7 +1500,7 @@ fn assert_stream_provider_restart(wire: BunWire) {
             existing_result,
             Err(RuntimeFailure::Unavailable {
                 capability: CHAT_CAPABILITY_ID
-            }) | Err(RuntimeFailure::PluginFailure { .. })
+            } | RuntimeFailure::PluginFailure { .. })
         ),
         "{wire:?} existing stream should terminate with its old generation, got {existing_result:?}"
     );
@@ -1752,6 +1853,7 @@ fn bun_consumer_can_open_full_duplex_streams_from_a_rust_provider_bridge() {
 
 #[test]
 #[ignore = "requires Bun; CI runs ignored cross-runtime tests after installing Bun"]
+#[allow(clippy::too_many_lines)]
 fn shared_request_corpus_has_the_same_outcomes_for_a_bun_consumer() {
     let server = BunProviderServer::json_rpc(
         BunProviderDescriptor {

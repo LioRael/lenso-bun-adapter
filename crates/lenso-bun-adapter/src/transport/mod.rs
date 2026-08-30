@@ -1,11 +1,11 @@
 use std::{
     any::Any,
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     future::Future,
     io::{BufRead, BufReader},
     net::{SocketAddr, ToSocketAddrs},
     pin::Pin,
-    process::{Child, ChildStdin, ChildStdout},
+    process::{Child, ChildStderr, ChildStdin, ChildStdout},
     sync::{
         Arc, Mutex, Weak,
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
@@ -45,6 +45,10 @@ use json_rpc::{JsonRpcTransport, open_json_rpc};
 pub(crate) use stream_session::TransportStreamSession;
 
 const MAX_STREAM_CREDIT_WAITERS: usize = 64;
+const MAX_PROCESS_DIAGNOSTIC_LINES: usize = 32;
+const MAX_PROCESS_DIAGNOSTIC_CHARS: usize = 512;
+const MAX_PROCESS_DIAGNOSTIC_BYTES: usize = MAX_PROCESS_DIAGNOSTIC_CHARS;
+const TRUNCATED_PROCESS_DIAGNOSTIC: &str = "[suppressed truncated child output]";
 static NEXT_STREAM_CALL_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Wire implementations evaluated by the Bun Adapter evidence spike.
@@ -71,6 +75,7 @@ pub(crate) struct ProcessState {
     alive: AtomicBool,
     monitor_started: AtomicBool,
     failure: Mutex<Option<RuntimeFailure>>,
+    diagnostics: Mutex<VecDeque<String>>,
     failure_handler: Mutex<Option<FailureHandler>>,
     exit_waiters: Mutex<Vec<oneshot::Sender<()>>>,
 }
@@ -96,6 +101,7 @@ impl ProcessState {
             alive: AtomicBool::new(true),
             monitor_started: AtomicBool::new(false),
             failure: Mutex::new(None),
+            diagnostics: Mutex::new(VecDeque::new()),
             failure_handler: Mutex::new(None),
             exit_waiters: Mutex::new(Vec::new()),
         })
@@ -166,12 +172,60 @@ impl ProcessState {
             })
     }
 
+    fn take_stderr(&self) -> Option<ChildStderr> {
+        self.child.lock().ok()?.stderr.take()
+    }
+
+    fn record_diagnostic(&self, stream: &str, line: &str) {
+        let line = redact_diagnostic_line(line);
+        let line = line
+            .chars()
+            .filter(|character| !character.is_control() || *character == '\t')
+            .take(MAX_PROCESS_DIAGNOSTIC_CHARS)
+            .collect::<String>();
+        if line.is_empty() {
+            return;
+        }
+        if let Ok(mut diagnostics) = self.diagnostics.lock() {
+            while diagnostics.len() >= MAX_PROCESS_DIAGNOSTIC_LINES {
+                diagnostics.pop_front();
+            }
+            diagnostics.push_back(format!("{stream}: {line}"));
+        }
+    }
+
+    fn diagnostic_tail(&self) -> String {
+        self.diagnostics.lock().map_or_else(
+            |_| String::new(),
+            |diagnostics| diagnostics.iter().cloned().collect::<Vec<_>>().join(" | "),
+        )
+    }
+
+    fn decorate_failure(&self, failure: RuntimeFailure) -> RuntimeFailure {
+        let RuntimeFailure::PluginFailure { detail } = failure else {
+            return failure;
+        };
+        let diagnostics = self.diagnostic_tail();
+        RuntimeFailure::PluginFailure {
+            detail: if diagnostics.is_empty() {
+                detail
+            } else {
+                format!("{detail}; child output: {diagnostics}")
+            },
+        }
+    }
+
     pub(crate) fn is_alive(&self) -> bool {
         self.alive.load(Ordering::Acquire)
     }
 
     pub(crate) fn failure(&self) -> Option<RuntimeFailure> {
-        self.failure.lock().ok().and_then(|failure| failure.clone())
+        let failure = self
+            .failure
+            .lock()
+            .ok()
+            .and_then(|failure| failure.clone())?;
+        Some(self.decorate_failure(failure))
     }
 
     pub(crate) fn failure_or_exit(&self) -> Option<RuntimeFailure> {
@@ -193,11 +247,10 @@ impl ProcessState {
             });
         match result {
             Ok(Some(status)) => {
-                let failure = RuntimeFailure::PluginFailure {
+                self.mark_dead(RuntimeFailure::PluginFailure {
                     detail: format!("Bun process exited with status {status}"),
-                };
-                self.mark_dead(failure.clone());
-                Some(failure)
+                });
+                self.failure()
             }
             Ok(None) => self.failure(),
             Err(error) => {
@@ -279,6 +332,41 @@ impl ProcessState {
                 }
             }
         }
+    }
+}
+
+fn redact_diagnostic_line(line: &str) -> String {
+    const SENSITIVE_MARKERS: &[&str] = &[
+        "authorization",
+        "bearer ",
+        "basic ",
+        "password",
+        "passwd",
+        "secret",
+        "token",
+        "api_key",
+        "api-key",
+        "apikey",
+        "cookie",
+        "set-cookie",
+    ];
+    let lowercase = line.to_ascii_lowercase();
+    let url_user_info = lowercase.match_indices("://").any(|(scheme, _)| {
+        lowercase[scheme + 3..]
+            .split(|character: char| {
+                matches!(character, '/' | '?' | '#') || character.is_ascii_whitespace()
+            })
+            .next()
+            .is_some_and(|authority| authority.contains('@'))
+    });
+    if url_user_info
+        || SENSITIVE_MARKERS
+            .iter()
+            .any(|marker| lowercase.contains(marker))
+    {
+        "[redacted sensitive child output]".to_owned()
+    } else {
+        line.to_owned()
     }
 }
 
@@ -573,14 +661,14 @@ fn remember_request_id(ids: &Mutex<BTreeSet<u64>>, request_id: u64) {
 fn build_json_rpc_client(
     address: SocketAddr,
     max_frame_bytes: usize,
-    queue_capacity: usize,
+    max_concurrent_requests: usize,
 ) -> Result<HttpClient, RuntimeFailure> {
     let max_frame_bytes = u32::try_from(max_frame_bytes).unwrap_or(u32::MAX);
     HttpClientBuilder::default()
         .max_request_size(max_frame_bytes)
         .max_response_size(max_frame_bytes)
         .request_timeout(HTTP_CONNECT_TIMEOUT)
-        .max_concurrent_requests(queue_capacity.max(1).saturating_add(1))
+        .max_concurrent_requests(max_concurrent_requests.max(1))
         .build(format!("http://{address}"))
         .map_err(|error| RuntimeFailure::PluginFailure {
             detail: format!("failed to build Bun JSON-RPC client: {error}"),
@@ -626,25 +714,97 @@ pub(crate) fn spawn_process(
     capability: &'static str,
 ) -> Result<Arc<ProcessState>, RuntimeFailure> {
     command.stderr(std::process::Stdio::piped());
-    let mut child = command
+    let child = command
         .spawn()
         .map_err(|error| RuntimeFailure::PluginFailure {
             detail: format!("failed to start Bun child process: {error}"),
         })?;
-    if let Some(stderr) = child.stderr.take() {
-        thread::Builder::new()
-            .name("lenso-bun-process-stderr".to_owned())
-            .spawn(move || {
-                let reader = BufReader::new(stderr);
-                for line in reader.lines() {
-                    if line.is_err() {
-                        break;
+    let process = ProcessState::start(child, capability);
+    if let Some(stderr) = process.take_stderr() {
+        spawn_output_drain(
+            Arc::downgrade(&process),
+            "stderr",
+            BufReader::new(stderr),
+            "lenso-bun-process-stderr",
+        );
+    }
+    Ok(process)
+}
+
+fn spawn_output_drain<R: std::io::Read + Send + 'static>(
+    process: Weak<ProcessState>,
+    stream: &'static str,
+    mut reader: BufReader<R>,
+    thread_name: &'static str,
+) {
+    thread::Builder::new()
+        .name(thread_name.to_owned())
+        .spawn(move || {
+            loop {
+                let Some(process) = process.upgrade() else {
+                    return;
+                };
+                match read_bounded_line(&mut reader, MAX_PROCESS_DIAGNOSTIC_BYTES) {
+                    Ok(Some(line)) => {
+                        if line.truncated {
+                            process.record_diagnostic(stream, TRUNCATED_PROCESS_DIAGNOSTIC);
+                        } else {
+                            process.record_diagnostic(stream, &line.text);
+                        }
+                    }
+                    Ok(None) => return,
+                    Err(error) => {
+                        process.record_diagnostic(stream, &format!("output read failed: {error}"));
+                        return;
                     }
                 }
-            })
-            .expect("Bun stderr drain thread should start");
+            }
+        })
+        .expect("Bun output drain thread should start");
+}
+
+#[derive(Debug)]
+struct BoundedLine {
+    text: String,
+    truncated: bool,
+}
+
+fn read_bounded_line<R: std::io::Read>(
+    reader: &mut BufReader<R>,
+    limit: usize,
+) -> std::io::Result<Option<BoundedLine>> {
+    let mut retained = Vec::with_capacity(limit);
+    let mut truncated = false;
+    loop {
+        let (consumed, reached_newline) = {
+            let available = reader.fill_buf()?;
+            if available.is_empty() {
+                if retained.is_empty() && !truncated {
+                    return Ok(None);
+                }
+                break;
+            }
+            let newline = available.iter().position(|byte| *byte == b'\n');
+            let consumed = newline.map_or(available.len(), |position| position + 1);
+            let payload_end = newline.unwrap_or(consumed);
+            let remaining = limit.saturating_sub(retained.len());
+            let copied = payload_end.min(remaining);
+            retained.extend_from_slice(&available[..copied]);
+            truncated |= copied < payload_end;
+            (consumed, newline.is_some())
+        };
+        reader.consume(consumed);
+        if reached_newline {
+            break;
+        }
     }
-    Ok(ProcessState::start(child, capability))
+    if retained.last() == Some(&b'\r') {
+        retained.pop();
+    }
+    Ok(Some(BoundedLine {
+        text: String::from_utf8_lossy(&retained).into_owned(),
+        truncated,
+    }))
 }
 
 pub(crate) fn open_transport(
@@ -667,26 +827,35 @@ pub(crate) fn open_transport(
             let stdout = process.take_stdout()?;
             process.start_monitor();
             let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
+            let readiness_process = Arc::clone(process);
             thread::Builder::new()
                 .name("lenso-bun-json-rpc-readiness".to_owned())
                 .spawn(move || {
-                    let _ = ready_sender.send(read_ready_address(stdout));
+                    let _ = ready_sender.send(read_ready_address(stdout, &readiness_process));
                 })
                 .map_err(|error| RuntimeFailure::Internal {
                     detail: format!("failed to start Bun readiness reader: {error}"),
                 })?;
-            let address = match ready_receiver.recv_timeout(PROCESS_STARTUP_TIMEOUT) {
-                Ok(Ok(address)) => address,
+            let (address, stdout) = match ready_receiver.recv_timeout(PROCESS_STARTUP_TIMEOUT) {
+                Ok(Ok(ready)) => ready,
                 Ok(Err(error)) => {
-                    return Err(process.failure_or_exit().unwrap_or(error));
+                    return Err(process
+                        .failure_or_exit()
+                        .unwrap_or_else(|| process.decorate_failure(error)));
                 }
                 Err(_) => {
                     process.stop();
-                    return Err(RuntimeFailure::PluginFailure {
+                    return Err(process.decorate_failure(RuntimeFailure::PluginFailure {
                         detail: "Bun JSON-RPC process readiness timed out".to_owned(),
-                    });
+                    }));
                 }
             };
+            spawn_output_drain(
+                Arc::downgrade(process),
+                "stdout",
+                stdout,
+                "lenso-bun-json-rpc-stdout",
+            );
             open_json_rpc(
                 process,
                 address,
@@ -699,17 +868,27 @@ pub(crate) fn open_transport(
     }
 }
 
-fn read_ready_address(stdout: ChildStdout) -> Result<SocketAddr, RuntimeFailure> {
+fn read_ready_address(
+    stdout: ChildStdout,
+    process: &ProcessState,
+) -> Result<(SocketAddr, BufReader<ChildStdout>), RuntimeFailure> {
     let mut reader = BufReader::new(stdout);
-    let mut line = String::new();
     for _ in 0..32 {
-        line.clear();
-        reader
-            .read_line(&mut line)
-            .map_err(|error| RuntimeFailure::PluginFailure {
-                detail: format!("failed to read Bun JSON-RPC readiness: {error}"),
-            })?;
-        let Some(port) = line.strip_prefix("LENSO_READY ") else {
+        let Some(line) =
+            read_bounded_line(&mut reader, MAX_PROCESS_DIAGNOSTIC_BYTES).map_err(|error| {
+                RuntimeFailure::PluginFailure {
+                    detail: format!("failed to read Bun JSON-RPC readiness: {error}"),
+                }
+            })?
+        else {
+            break;
+        };
+        if line.truncated {
+            process.record_diagnostic("stdout", TRUNCATED_PROCESS_DIAGNOSTIC);
+            continue;
+        }
+        let Some(port) = line.text.strip_prefix("LENSO_READY ") else {
+            process.record_diagnostic("stdout", &line.text);
             continue;
         };
         let port: u16 = port.trim().parse().map_err(|_| protocol_violation(None))?;
@@ -722,7 +901,7 @@ fn read_ready_address(stdout: ChildStdout) -> Result<SocketAddr, RuntimeFailure>
             .ok_or_else(|| RuntimeFailure::PluginFailure {
                 detail: "Bun JSON-RPC readiness address was empty".to_owned(),
             })?;
-        return Ok(address);
+        return Ok((address, reader));
     }
     Err(RuntimeFailure::PluginFailure {
         detail: "Bun JSON-RPC process did not announce readiness".to_owned(),
@@ -749,6 +928,171 @@ mod tests {
             process.failure(),
             Some(RuntimeFailure::PluginFailure { .. })
         ));
+    }
+
+    #[test]
+    fn process_state_retains_a_bounded_stderr_tail() {
+        let mut command = std::process::Command::new("sh");
+        command.args([
+            "-c",
+            "i=0; while [ $i -lt 40 ]; do echo diagnostic-$i >&2; i=$((i+1)); done; exit 9",
+        ]);
+        let process = spawn_process(command, "example.greeting@1").expect("process should start");
+        process.start_monitor();
+        for _ in 0..100 {
+            if !process.is_alive() && process.diagnostic_tail().contains("diagnostic-39") {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let diagnostics = process.diagnostic_tail();
+        assert!(diagnostics.contains("stderr: diagnostic-39"));
+        assert!(!diagnostics.contains("diagnostic-0 |"));
+        let failure = format!("{:?}", process.failure());
+        assert!(failure.contains("child output"));
+        assert!(failure.contains("diagnostic-39"));
+    }
+
+    #[test]
+    fn readiness_reader_returns_stdout_for_continued_drain() {
+        let mut command = std::process::Command::new("sh");
+        command
+            .args([
+                "-c",
+                "printf 'LENSO_READY 1234\\n'; sleep 0.02; printf 'after-ready\\n'",
+            ])
+            .stdout(std::process::Stdio::piped());
+        let process = spawn_process(command, "example.greeting@1").expect("process should start");
+        let stdout = process.take_stdout().unwrap();
+        let (address, reader) = read_ready_address(stdout, &process).unwrap();
+        assert_eq!(address, SocketAddr::from(([127, 0, 0, 1], 1234)));
+        spawn_output_drain(
+            Arc::downgrade(&process),
+            "stdout",
+            reader,
+            "lenso-bun-test-stdout",
+        );
+        for _ in 0..100 {
+            if process.diagnostic_tail().contains("after-ready") {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(process.diagnostic_tail().contains("stdout: after-ready"));
+    }
+
+    #[test]
+    fn readiness_retains_stdout_emitted_before_the_ready_line() {
+        let mut command = std::process::Command::new("sh");
+        command
+            .args(["-c", "printf 'booting provider\\nLENSO_READY 1234\\n'"])
+            .stdout(std::process::Stdio::piped());
+        let process = spawn_process(command, "example.greeting@1").expect("process should start");
+        let stdout = process.take_stdout().unwrap();
+
+        let (address, _reader) = read_ready_address(stdout, &process).unwrap();
+
+        assert_eq!(address, SocketAddr::from(([127, 0, 0, 1], 1234)));
+        assert!(
+            process
+                .diagnostic_tail()
+                .contains("stdout: booting provider")
+        );
+    }
+
+    #[test]
+    fn failure_uses_stderr_that_arrives_after_the_process_is_marked_dead() {
+        let mut command = std::process::Command::new("sh");
+        command.args(["-c", "sleep 0.02; printf 'late detail\\n' >&2; sleep 0.1"]);
+        let process = spawn_process(command, "example.greeting@1").expect("process should start");
+        process.mark_dead(RuntimeFailure::PluginFailure {
+            detail: "Bun process failed".to_owned(),
+        });
+        for _ in 0..100 {
+            if process.diagnostic_tail().contains("late detail") {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+
+        let failure = format!("{:?}", process.failure());
+        assert!(failure.contains("Bun process failed"));
+        assert!(failure.contains("stderr: late detail"));
+    }
+
+    #[test]
+    fn child_output_redacts_common_credentials_before_failure_display() {
+        let mut command = std::process::Command::new("sh");
+        command.args(["-c", "sleep 30"]);
+        let process = spawn_process(command, "example.greeting@1").expect("process should start");
+        process.record_diagnostic("stderr", "Authorization: Bearer do-not-leak");
+        process.record_diagnostic("stdout", "https://alice:password@example.com/path");
+        process.record_diagnostic(
+            "stdout",
+            "safe https://example.com/path then https://alice:opaque@example.com/private",
+        );
+        process.mark_dead(RuntimeFailure::PluginFailure {
+            detail: "Bun process failed".to_owned(),
+        });
+
+        let failure = format!("{:?}", process.failure());
+        assert!(failure.contains("[redacted sensitive child output]"));
+        assert!(!failure.contains("do-not-leak"));
+        assert!(!failure.contains("alice"));
+        assert!(!failure.contains("password"));
+        assert!(!failure.contains("opaque"));
+    }
+
+    #[test]
+    fn multi_megabyte_line_is_drained_with_bounded_diagnostics() {
+        let mut command = std::process::Command::new("sh");
+        command.args([
+            "-c",
+            "awk 'BEGIN { for (i = 0; i < 2097152; i++) printf \"x\" }' >&2; exit 9",
+        ]);
+        let process = spawn_process(command, "example.greeting@1").expect("process should start");
+        process.start_monitor();
+        for _ in 0..400 {
+            if !process.is_alive()
+                && process
+                    .diagnostic_tail()
+                    .contains(TRUNCATED_PROCESS_DIAGNOSTIC)
+            {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+
+        let diagnostics = process.diagnostic_tail();
+        assert!(diagnostics.contains(TRUNCATED_PROCESS_DIAGNOSTIC));
+        assert!(diagnostics.len() <= MAX_PROCESS_DIAGNOSTIC_CHARS + 32);
+    }
+
+    #[test]
+    fn truncated_child_output_never_retains_a_sensitive_prefix() {
+        let mut command = std::process::Command::new("sh");
+        command.args([
+            "-c",
+            "{ printf 'https://alice:opaque'; awk 'BEGIN { for (i = 0; i < 600; i++) printf \"x\" }'; printf '@example.com\\n'; } >&2; exit 9",
+        ]);
+        let process = spawn_process(command, "example.greeting@1").expect("process should start");
+        process.start_monitor();
+        for _ in 0..400 {
+            if !process.is_alive()
+                && process
+                    .diagnostic_tail()
+                    .contains(TRUNCATED_PROCESS_DIAGNOSTIC)
+            {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+
+        let failure = format!("{:?}", process.failure());
+        assert!(failure.contains(TRUNCATED_PROCESS_DIAGNOSTIC));
+        assert!(!failure.contains("alice"));
+        assert!(!failure.contains("opaque"));
+        assert!(!failure.contains("example.com"));
     }
 
     #[test]

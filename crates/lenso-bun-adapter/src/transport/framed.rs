@@ -279,6 +279,7 @@ impl FramedTransport {
         )
     }
 
+    #[allow(clippy::needless_pass_by_value, clippy::too_many_arguments)]
     fn call_on(
         self: &Arc<Self>,
         message: FramedMessage,
@@ -365,6 +366,7 @@ impl FramedTransport {
         }
     }
 
+    #[allow(clippy::needless_pass_by_value)]
     pub(super) fn stream_request(
         self: &Arc<Self>,
         message: FramedMessage,
