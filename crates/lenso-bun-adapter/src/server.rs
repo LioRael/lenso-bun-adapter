@@ -379,9 +379,8 @@ fn spawn_event_worker(
         .name("lenso-bun-provider-event-worker".to_owned())
         .spawn(move || {
             loop {
-                let event = match queue.pop() {
-                    Ok(Some(event)) => event,
-                    Ok(None) | Err(_) => return,
+                let Ok(Some(event)) = queue.pop() else {
+                    return;
                 };
                 if !event.request.is_cancelled() {
                     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -417,6 +416,7 @@ impl std::fmt::Debug for BunProviderServer {
 
 impl BunProviderServer {
     /// Starts one bounded loopback JSON-RPC provider endpoint.
+    #[allow(clippy::too_many_lines)]
     pub fn json_rpc(
         descriptor: BunProviderDescriptor,
         max_frame_bytes: usize,
@@ -816,7 +816,7 @@ fn event_queue_for(
         .caller_instance
         .as_deref()
         .filter(|caller| !caller.is_empty())
-        .ok_or_else(|| RuntimeFailure::ProtocolViolation {
+        .ok_or(RuntimeFailure::ProtocolViolation {
             capability: state.capability,
         })?;
     state
@@ -834,6 +834,7 @@ struct CancelRequest {
     session: String,
 }
 
+#[allow(clippy::too_many_lines)]
 fn handle_stream_open(open: WireStreamOpen, state: &ProviderState) -> WireStreamOutcome {
     if !valid_session(open.session.as_deref(), state) {
         return stream_runtime_outcome(&protocol_failure(state));
@@ -938,6 +939,7 @@ fn handle_stream_open(open: WireStreamOpen, state: &ProviderState) -> WireStream
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn handle_stream_call(call: WireStreamCall, state: &ProviderState) -> WireStreamOutcome {
     let (request_id, stream_id, session) = match &call {
         WireStreamCall::Send {
@@ -1110,7 +1112,8 @@ fn handle_stream_call(call: WireStreamCall, state: &ProviderState) -> WireStream
             }
             match entry.stream.peer_half_closed() {
                 BunStreamAction::Accepted => WireStreamOutcome::Accepted {
-                    credit: entry.inbound_credit.load(Ordering::Acquire) as u32,
+                    credit: u32::try_from(entry.inbound_credit.load(Ordering::Acquire))
+                        .unwrap_or(u32::MAX),
                 },
                 BunStreamAction::Runtime(error) => {
                     if matches!(&error, RuntimeFailure::ResourceExhausted { .. }) {

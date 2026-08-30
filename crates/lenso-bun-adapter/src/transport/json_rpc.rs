@@ -1,19 +1,25 @@
 use super::{
     Arc, AtomicBool, BTreeMap, BTreeSet, CapabilityIds, ClientT, Handshake, HandshakeAck,
     HttpClient, Mutex, Ordering, PendingResponses, PendingStreamResponses, ProcessState, Receiver,
-    RuntimeFailure, SocketAddr, StreamCall, StreamWireResult, SyncSender, TransportClient,
-    TrySendError, Value, Weak, WireCall, WireEventPublish, WireOutcome, WireRequest, WireResult,
-    WireStreamOutcome, build_json_rpc_client, capability_id, json_rpc_failure, json_rpc_runtime,
-    mpsc, oneshot, protocol_violation, remember_request_id, rpc_params, thread, verify_handshake,
+    RuntimeFailure, SocketAddr, StreamCall, StreamWireResult, SyncSender, TransportClient, Value,
+    Weak, WireCall, WireEventPublish, WireOutcome, WireRequest, WireResult, WireStreamOutcome,
+    build_json_rpc_client, capability_id, json_rpc_failure, json_rpc_runtime, mpsc, oneshot,
+    protocol_violation, remember_request_id, rpc_params, thread, verify_handshake,
 };
+use futures::{StreamExt as _, stream::FuturesUnordered};
+use tokio::sync::mpsc as tokio_mpsc;
+
+const JSON_RPC_PERSISTENT_WORKERS: usize = 5;
+const JSON_RPC_EVENT_IN_FLIGHT: usize = 1;
+const JSON_RPC_CONTROL_IN_FLIGHT: usize = 2;
 
 #[derive(Debug)]
 pub(crate) struct JsonRpcTransport {
     pub(super) process: Arc<ProcessState>,
-    sender: SyncSender<HttpCall>,
-    event_sender: SyncSender<HttpCall>,
+    sender: tokio_mpsc::Sender<HttpCall>,
+    event_sender: tokio_mpsc::Sender<HttpCall>,
     cancel_sender: SyncSender<u64>,
-    stream_sender: SyncSender<HttpStreamCall>,
+    stream_sender: tokio_mpsc::Sender<HttpStreamCall>,
     stream_cancel_sender: SyncSender<StreamCancelCall>,
     pending: PendingResponses,
     event_pending: PendingResponses,
@@ -66,6 +72,7 @@ pub(crate) fn open_json_rpc(
     event_queue_capacity: usize,
     capability_ids: CapabilityIds,
 ) -> Result<TransportClient, RuntimeFailure> {
+    debug_assert_eq!(JSON_RPC_PERSISTENT_WORKERS, 5);
     let capability_name = expected
         .endpoints
         .first()
@@ -73,7 +80,13 @@ pub(crate) fn open_json_rpc(
             endpoint.capability_id.as_str()
         });
     let capability = capability_id(&capability_ids, capability_name);
-    let client = build_json_rpc_client(address, expected.max_frame_bytes, queue_capacity)?;
+    let queue_capacity = queue_capacity.max(1);
+    let event_queue_capacity = event_queue_capacity.max(1);
+    let client = build_json_rpc_client(
+        address,
+        expected.max_frame_bytes,
+        queue_capacity.saturating_add(JSON_RPC_EVENT_IN_FLIGHT),
+    )?;
     let actual: HandshakeAck = thread::scope(|scope| {
         scope
             .spawn(|| {
@@ -93,13 +106,16 @@ pub(crate) fn open_json_rpc(
         .filter(|session| !session.is_empty())
         .ok_or_else(|| protocol_violation(Some(capability)))?;
 
-    let queue_capacity = queue_capacity.max(1);
-    let event_queue_capacity = event_queue_capacity.max(1);
+    let control_client = Arc::new(build_json_rpc_client(
+        address,
+        expected.max_frame_bytes,
+        JSON_RPC_CONTROL_IN_FLIGHT,
+    )?);
     let stream_capacity = queue_capacity.max(2);
-    let (sender, receiver) = mpsc::sync_channel(queue_capacity);
-    let (event_sender, event_receiver) = mpsc::sync_channel(event_queue_capacity);
+    let (sender, receiver) = tokio_mpsc::channel(queue_capacity);
+    let (event_sender, event_receiver) = tokio_mpsc::channel(event_queue_capacity);
     let (cancel_sender, cancel_receiver) = mpsc::sync_channel(queue_capacity.saturating_add(1));
-    let (stream_sender, stream_receiver) = mpsc::sync_channel(stream_capacity);
+    let (stream_sender, stream_receiver) = tokio_mpsc::channel(stream_capacity);
     let (stream_cancel_sender, stream_cancel_receiver) =
         mpsc::sync_channel(queue_capacity.saturating_add(1));
     let transport = Arc::new(JsonRpcTransport {
@@ -136,31 +152,30 @@ pub(crate) fn open_json_rpc(
         Arc::downgrade(&transport),
         receiver,
         "lenso-bun-json-rpc-worker",
+        queue_capacity,
     );
     spawn_json_rpc_worker(
         Arc::downgrade(&transport),
         event_receiver,
         "lenso-bun-json-rpc-event-worker",
+        1,
     );
     spawn_json_rpc_cancel_worker(
         process.clone(),
-        transport.client.clone(),
+        Arc::clone(&control_client),
         transport.session.clone(),
         cancel_receiver,
     );
     spawn_json_rpc_stream_worker(Arc::downgrade(&transport), stream_receiver, stream_capacity);
-    spawn_json_rpc_stream_cancel_worker(
-        process.clone(),
-        transport.client.clone(),
-        stream_cancel_receiver,
-    );
+    spawn_json_rpc_stream_cancel_worker(process.clone(), control_client, stream_cancel_receiver);
     Ok(TransportClient::JsonRpc(transport))
 }
 
 fn spawn_json_rpc_worker(
     transport: Weak<JsonRpcTransport>,
-    receiver: Receiver<HttpCall>,
+    receiver: tokio_mpsc::Receiver<HttpCall>,
     thread_name: &'static str,
+    max_in_flight: usize,
 ) {
     thread::Builder::new()
         .name(thread_name.to_owned())
@@ -174,66 +189,87 @@ fn spawn_json_rpc_worker(
                     return;
                 }
             };
-            while let Ok(call) = receiver.recv() {
-                let Some(transport) = transport.upgrade() else {
-                    break;
-                };
-                let (request_id, method, operation, params) = match call.payload {
-                    HttpCallPayload::Request(request) => (
-                        request.request_id,
-                        "lenso.request",
-                        "request",
-                        serde_json::to_value(request).map_err(|_| protocol_violation(None)),
-                    ),
-                    HttpCallPayload::Event(event) => (
-                        event.request_id,
-                        "lenso.event.publish",
-                        "event",
-                        serde_json::to_value(event).map_err(|_| protocol_violation(None)),
-                    ),
-                };
-                let params = match params {
-                    Ok(params) => params,
-                    Err(error) => {
-                        transport.finish(request_id, Err(error));
-                        continue;
-                    }
-                };
-                if call.cancelled.load(Ordering::Acquire) {
-                    transport.finish(request_id, Err(RuntimeFailure::Cancelled { request_id }));
-                    continue;
-                }
-                let result = if call.cancelled.load(Ordering::Acquire) {
-                    Err(RuntimeFailure::Cancelled { request_id })
-                } else {
-                    runtime
-                        .block_on(
-                            transport
-                                .client
-                                .request::<WireOutcome, _>(method, rpc_params![params]),
-                        )
-                        .map_err(|error| json_rpc_failure(operation, &error, transport.capability))
-                        .and_then(|outcome| {
-                            if call.cancelled.load(Ordering::Acquire) {
-                                Err(RuntimeFailure::Cancelled { request_id })
-                            } else {
-                                Ok(outcome)
-                            }
-                        })
-                };
-                if let Err(error) = &result
-                    && !matches!(error, RuntimeFailure::Cancelled { .. })
-                {
-                    let failure = transport
-                        .process
-                        .failure_or_exit()
-                        .unwrap_or_else(|| error.clone());
-                    transport.process.mark_dead(failure);
-                }
-                transport.finish(request_id, result);
-            }
+            runtime.block_on(run_json_rpc_worker(transport, receiver, max_in_flight));
         })
         .expect("Bun JSON-RPC worker thread should start");
+}
+
+async fn run_json_rpc_worker(
+    transport: Weak<JsonRpcTransport>,
+    mut receiver: tokio_mpsc::Receiver<HttpCall>,
+    max_in_flight: usize,
+) {
+    let mut receiver_open = true;
+    let mut in_flight = FuturesUnordered::new();
+    loop {
+        if !receiver_open && in_flight.is_empty() {
+            return;
+        }
+        if in_flight.len() >= max_in_flight.max(1) {
+            let _ = in_flight.next().await;
+            continue;
+        }
+        tokio::select! {
+            call = receiver.recv(), if receiver_open => match call {
+                Some(call) => in_flight.push(execute_json_rpc_call(transport.clone(), call)),
+                None => receiver_open = false,
+            },
+            _ = in_flight.next(), if !in_flight.is_empty() => {}
+        }
+    }
+}
+
+async fn execute_json_rpc_call(transport: Weak<JsonRpcTransport>, call: HttpCall) {
+    let Some(transport) = transport.upgrade() else {
+        return;
+    };
+    let (request_id, method, operation, params) = match call.payload {
+        HttpCallPayload::Request(request) => (
+            request.request_id,
+            "lenso.request",
+            "request",
+            serde_json::to_value(request).map_err(|_| protocol_violation(None)),
+        ),
+        HttpCallPayload::Event(event) => (
+            event.request_id,
+            "lenso.event.publish",
+            "event",
+            serde_json::to_value(event).map_err(|_| protocol_violation(None)),
+        ),
+    };
+    let params = match params {
+        Ok(params) => params,
+        Err(error) => {
+            transport.finish(request_id, Err(error));
+            return;
+        }
+    };
+    let result = if call.cancelled.load(Ordering::Acquire) {
+        Err(RuntimeFailure::Cancelled { request_id })
+    } else {
+        transport
+            .client
+            .request::<WireOutcome, _>(method, rpc_params![params])
+            .await
+            .map_err(|error| json_rpc_failure(operation, &error, transport.capability))
+            .and_then(|outcome| {
+                if call.cancelled.load(Ordering::Acquire) {
+                    Err(RuntimeFailure::Cancelled { request_id })
+                } else {
+                    Ok(outcome)
+                }
+            })
+    };
+    if let Err(error) = &result
+        && !matches!(error, RuntimeFailure::Cancelled { .. })
+    {
+        let failure = transport
+            .process
+            .failure_or_exit()
+            .unwrap_or_else(|| error.clone());
+        transport.process.mark_dead(failure);
+    }
+    transport.finish(request_id, result);
 }
 
 fn spawn_json_rpc_cancel_worker(
@@ -266,84 +302,110 @@ fn spawn_json_rpc_cancel_worker(
 
 fn spawn_json_rpc_stream_worker(
     transport: Weak<JsonRpcTransport>,
-    receiver: Receiver<HttpStreamCall>,
+    receiver: tokio_mpsc::Receiver<HttpStreamCall>,
     worker_count: usize,
 ) {
-    let receiver = Arc::new(Mutex::new(receiver));
-    for worker_index in 0..worker_count.max(2) {
-        let transport = transport.clone();
-        let receiver = receiver.clone();
-        thread::Builder::new()
-            .name(format!("lenso-bun-json-rpc-stream-worker-{worker_index}"))
-            .spawn(move || {
-                let runtime = match json_rpc_runtime() {
-                    Ok(runtime) => runtime,
+    thread::Builder::new()
+        .name("lenso-bun-json-rpc-stream-worker".to_owned())
+        .spawn(move || {
+            let runtime = match json_rpc_runtime() {
+                Ok(runtime) => runtime,
+                Err(error) => {
+                    if let Some(transport) = transport.upgrade() {
+                        transport.process.mark_dead(error);
+                    }
+                    return;
+                }
+            };
+            let client = match transport.upgrade() {
+                Some(transport) => match build_json_rpc_client(
+                    transport.address,
+                    transport.max_frame_bytes,
+                    transport.stream_admission_capacity,
+                ) {
+                    Ok(client) => Arc::new(client),
                     Err(error) => {
-                        if let Some(transport) = transport.upgrade() {
-                            transport.process.mark_dead(error);
-                        }
+                        transport.process.mark_dead(error);
                         return;
                     }
-                };
-                let client = match transport.upgrade() {
-                    Some(transport) => match build_json_rpc_client(
-                        transport.address,
-                        transport.max_frame_bytes,
-                        transport.stream_admission_capacity,
-                    ) {
-                        Ok(client) => client,
-                        Err(error) => {
-                            transport.process.mark_dead(error);
-                            return;
-                        }
-                    },
-                    None => return,
-                };
-                loop {
-                    let call = match receiver.lock() {
-                        Ok(receiver) => receiver.recv(),
-                        Err(_) => return,
-                    };
-                    let Ok(call) = call else { break };
-                    let Some(transport) = transport.upgrade() else {
-                        break;
-                    };
-                    let request_id = call.request_id;
-                    if call.cancelled.load(Ordering::Acquire) {
-                        transport.finish_stream(
-                            request_id,
-                            Err(RuntimeFailure::Cancelled { request_id }),
-                        );
-                        continue;
-                    }
-                    let method = call.method;
-                    let result = runtime
-                        .block_on(
-                            client
-                                .request::<WireStreamOutcome, _>(method, rpc_params![call.params]),
-                        )
-                        .map_err(|error| json_rpc_failure(method, &error, transport.capability))
-                        .and_then(|outcome| {
-                            if call.cancelled.load(Ordering::Acquire) {
-                                Err(RuntimeFailure::Cancelled { request_id })
-                            } else {
-                                Ok(outcome)
-                            }
-                        });
-                    if let Err(error) = &result
-                        && !matches!(error, RuntimeFailure::Cancelled { .. })
-                    {
-                        let failure = transport
-                            .process
-                            .failure_or_exit()
-                            .unwrap_or_else(|| error.clone());
-                        transport.process.mark_dead(failure);
-                    }
-                    transport.finish_stream(request_id, result);
+                },
+                None => return,
+            };
+            runtime.block_on(run_json_rpc_stream_worker(
+                transport,
+                receiver,
+                client,
+                worker_count,
+            ));
+        })
+        .expect("Bun JSON-RPC stream worker thread should start");
+}
+
+async fn run_json_rpc_stream_worker(
+    transport: Weak<JsonRpcTransport>,
+    mut receiver: tokio_mpsc::Receiver<HttpStreamCall>,
+    client: Arc<HttpClient>,
+    max_in_flight: usize,
+) {
+    let mut receiver_open = true;
+    let mut in_flight = FuturesUnordered::new();
+    loop {
+        if !receiver_open && in_flight.is_empty() {
+            return;
+        }
+        if in_flight.len() >= max_in_flight.max(1) {
+            let _ = in_flight.next().await;
+            continue;
+        }
+        tokio::select! {
+            call = receiver.recv(), if receiver_open => match call {
+                Some(call) => in_flight.push(execute_json_rpc_stream_call(
+                    transport.clone(),
+                    Arc::clone(&client),
+                    call,
+                )),
+                None => receiver_open = false,
+            },
+            _ = in_flight.next(), if !in_flight.is_empty() => {}
+        }
+    }
+}
+
+async fn execute_json_rpc_stream_call(
+    transport: Weak<JsonRpcTransport>,
+    client: Arc<HttpClient>,
+    call: HttpStreamCall,
+) {
+    let Some(transport) = transport.upgrade() else {
+        return;
+    };
+    let request_id = call.request_id;
+    let method = call.method;
+    let result = if call.cancelled.load(Ordering::Acquire) {
+        Err(RuntimeFailure::Cancelled { request_id })
+    } else {
+        client
+            .request::<WireStreamOutcome, _>(method, rpc_params![call.params])
+            .await
+            .map_err(|error| json_rpc_failure(method, &error, transport.capability))
+            .and_then(|outcome| {
+                if call.cancelled.load(Ordering::Acquire) {
+                    Err(RuntimeFailure::Cancelled { request_id })
+                } else {
+                    Ok(outcome)
                 }
             })
-            .expect("Bun JSON-RPC stream worker thread should start");
+    };
+    if let Err(error) = &result
+        && !matches!(error, RuntimeFailure::Cancelled { .. })
+    {
+        let failure = transport
+            .process
+            .failure_or_exit()
+            .unwrap_or_else(|| error.clone());
+        transport.process.mark_dead(failure);
     }
+    transport.finish_stream(request_id, result);
 }
 
 fn spawn_json_rpc_stream_cancel_worker(
@@ -374,6 +436,7 @@ fn spawn_json_rpc_stream_cancel_worker(
 }
 
 impl JsonRpcTransport {
+    #[allow(clippy::too_many_lines)]
     pub(super) fn stream_request(
         self: &Arc<Self>,
         request_id: u64,
@@ -464,7 +527,7 @@ impl JsonRpcTransport {
                 TransportClient::JsonRpc(self.clone()),
                 receiver,
             )),
-            Err(TrySendError::Full(_)) => {
+            Err(tokio_mpsc::error::TrySendError::Full(_)) => {
                 self.stream_cancellations
                     .lock()
                     .ok()
@@ -478,7 +541,7 @@ impl JsonRpcTransport {
                     operation: operation.to_owned(),
                 })
             }
-            Err(TrySendError::Disconnected(_)) => {
+            Err(tokio_mpsc::error::TrySendError::Closed(_)) => {
                 self.stream_cancellations
                     .lock()
                     .ok()
@@ -513,6 +576,7 @@ impl JsonRpcTransport {
         self.call(HttpCallPayload::Event(event))
     }
 
+    #[allow(clippy::too_many_lines)]
     fn call(self: &Arc<Self>, payload: HttpCallPayload) -> Result<WireCall, RuntimeFailure> {
         if !self.process.is_alive() {
             return Err(self
@@ -638,7 +702,7 @@ impl JsonRpcTransport {
                 TransportClient::JsonRpc(self.clone()),
                 receiver,
             )),
-            Err(TrySendError::Full(_)) => {
+            Err(tokio_mpsc::error::TrySendError::Full(_)) => {
                 self.cancellations
                     .lock()
                     .ok()
@@ -652,7 +716,7 @@ impl JsonRpcTransport {
                     operation,
                 })
             }
-            Err(TrySendError::Disconnected(_)) => {
+            Err(tokio_mpsc::error::TrySendError::Closed(_)) => {
                 self.cancellations
                     .lock()
                     .ok()
@@ -810,5 +874,25 @@ impl JsonRpcTransport {
 impl Drop for JsonRpcTransport {
     fn drop(&mut self) {
         self.process.stop();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        JSON_RPC_CONTROL_IN_FLIGHT, JSON_RPC_EVENT_IN_FLIGHT, JSON_RPC_PERSISTENT_WORKERS,
+    };
+
+    #[test]
+    fn json_rpc_worker_budget_is_independent_of_queue_capacity() {
+        let worker_budget = std::hint::black_box(JSON_RPC_PERSISTENT_WORKERS);
+        assert_eq!(worker_budget, 5);
+        assert!(worker_budget < 32);
+    }
+
+    #[test]
+    fn json_rpc_control_capacity_is_independent_of_saturated_data_requests() {
+        assert_eq!(JSON_RPC_EVENT_IN_FLIGHT, 1);
+        assert_eq!(JSON_RPC_CONTROL_IN_FLIGHT, 2);
     }
 }

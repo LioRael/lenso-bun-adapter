@@ -186,6 +186,7 @@ impl BunAdapter {
         self.config.wire
     }
 
+    #[allow(clippy::too_many_lines)]
     fn prepare_instance(
         &self,
         plan: &ResolvedAppPlan,

@@ -1,8 +1,8 @@
 {
   "schema": "lenso.bun-wire-benchmark.v1",
-  "generated_at": "2026-08-20T21:21:50.486Z",
+  "generated_at": "2026-08-30T04:21:12.637Z",
   "runtime": {
-    "bun": "1.4.0",
+    "bun": "1.4.1",
     "node": "v26.3.0",
     "platform": "darwin",
     "arch": "arm64"
@@ -16,16 +16,16 @@
   "candidates": {
     "framed-stdio": {
       "instance_count": 1,
-      "startup_ms": 7.312,
+      "startup_ms": 15.367,
       "request_count": 50,
       "latency_ms": {
-        "p50": 0.057,
-        "p95": 0.329,
-        "p99": 0.629
+        "p50": 0.044,
+        "p95": 0.544,
+        "p99": 4.59
       },
-      "throughput_requests_per_second": 10957.696,
-      "memory_max_rss_bytes": 21708800,
-      "cancellation_ms": 6.36,
+      "throughput_requests_per_second": 5042.864,
+      "memory_max_rss_bytes": 21544960,
+      "cancellation_ms": 6.895,
       "corpus_results": {
         "success": "success",
         "known-domain-error": "domain",
@@ -43,16 +43,16 @@
     },
     "json-rpc-http": {
       "instance_count": 1,
-      "startup_ms": 8.601,
+      "startup_ms": 20.831,
       "request_count": 50,
       "latency_ms": {
-        "p50": 0.092,
-        "p95": 0.438,
-        "p99": 0.9
+        "p50": 0.127,
+        "p95": 0.592,
+        "p99": 2.2
       },
-      "throughput_requests_per_second": 6768.231,
-      "memory_max_rss_bytes": 24313856,
-      "cancellation_ms": 30.965,
+      "throughput_requests_per_second": 4258.565,
+      "memory_max_rss_bytes": 26443776,
+      "cancellation_ms": 26.863,
       "corpus_results": {
         "success": "success",
         "known-domain-error": "domain",
@@ -71,14 +71,14 @@
   },
   "crash": {
     "framed-stdio": {
-      "detection_ms": 1.016,
-      "recovery_ms": 7.708,
+      "detection_ms": 2.469,
+      "recovery_ms": 9.514,
       "exit_code": 17,
       "observed_failure": "plugin_failure"
     },
     "json-rpc-http": {
-      "detection_ms": 1.095,
-      "recovery_ms": 8.906,
+      "detection_ms": 2.905,
+      "recovery_ms": 9.803,
       "exit_code": 17,
       "observed_failure": "plugin_failure"
     }

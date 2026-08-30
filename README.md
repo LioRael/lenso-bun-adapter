@@ -47,11 +47,24 @@ The source was extracted from `LioRael/lenso` at monorepo commit
 `67d21499548d07e92c2f6529d7c8345e58c067d9` under ADR 0064. Imported subtrees
 retain their relevant Git history.
 
+## Child process diagnostics
+
+The Rust Host continuously drains Bun stdout and stderr into a bounded
+32-line diagnostic tail. Common credential markers and URL user information
+are redacted before failures become user visible. Lines longer than the
+diagnostic bound are fully suppressed instead of retaining a potentially
+sensitive prefix.
+
+JSON-RPC data requests and ordered Events share a bounded concurrent client.
+Request and stream cancellation use a separate two-slot control client, so a
+full set of slow data requests cannot delay cancellation delivery.
+
 ## Validation
 
 ```sh
 cargo fmt --all -- --check
 cargo check --locked --workspace --all-targets
+cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo test --locked --workspace
 bun install --frozen-lockfile
 bun run --filter '@lenso/bun' capabilities:check
