@@ -19,7 +19,7 @@ Implementation:
 - the full 50-request evidence file is reproducible from the documented fixture.
 
 Validation:
-- `RUSTUP_TOOLCHAIN=1.94.0 ... lenso-cargo check --locked --workspace
+- `RUSTUP_TOOLCHAIN=1.94.0 ... cargo check --locked --workspace
   --all-targets` passed;
 - workspace fmt/check/clippy/test passed and the real Bun suite passed 23/23;
 - official `git ls-remote` tag proof matched checkout v6.1.0, setup-bun v2.2.0,
