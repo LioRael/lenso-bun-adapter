@@ -1,6 +1,9 @@
 [workspace]
 resolver = "2"
-members = ["crates/lenso-bun-adapter"]
+members = [
+    "crates/lenso-bun-adapter",
+    "crates/lenso-libbun-adapter",
+]
 
 [workspace.package]
 edition = "2024"
