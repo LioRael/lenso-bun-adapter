@@ -82,6 +82,7 @@ during managed shutdown.
 ```ts
 export default definePlugin({
   dependencies: { store: storeDependency },
+  configurationSchema: NotesConfig.schema,
   decodeConfig: NotesConfig.parse,
   async create({ config, dependencies }) {
     return { config, store: dependencies.store, cache: new Map() };

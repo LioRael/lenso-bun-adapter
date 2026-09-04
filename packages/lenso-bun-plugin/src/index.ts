@@ -71,6 +71,7 @@ export interface BunPluginOptions<
 > {
   readonly providers: ReadonlyArray<CapabilityProviderBinding<Instance>>;
   readonly dependencies?: Dependencies;
+  readonly configurationSchema?: boolean | Readonly<Record<string, unknown>>;
   readonly decodeConfig?: (value: unknown) => Config;
   readonly create?: (inputs: PluginInputs<Dependencies, Config>) => Instance | Promise<Instance>;
   readonly stop?: (instance: Instance) => void | Promise<void>;
@@ -84,6 +85,7 @@ export interface BunPluginDefinition<
 > {
   readonly providers: ReadonlyArray<CapabilityProviderBinding<Instance>>;
   readonly dependencies: Dependencies;
+  readonly configurationSchema: boolean | Readonly<Record<string, unknown>> | undefined;
   readonly decodeConfig: ((value: unknown) => Config) | undefined;
   readonly create: ((inputs: PluginInputs<Dependencies, Config>) => Instance | Promise<Instance>) | undefined;
   readonly stop: ((instance: Instance) => void | Promise<void>) | undefined;
@@ -93,6 +95,7 @@ export interface BunPluginDefinition<
 /** Runtime-independent descriptor consumed by generated QuickJS and Bun wrappers. */
 export interface PortablePluginDescriptor {
   readonly abi: "lenso.json-request@1";
+  readonly configuration_schema?: boolean | Readonly<Record<string, unknown>>;
   readonly capabilities: ReadonlyArray<{
     readonly capability_id: string;
     readonly descriptor_version: string;
@@ -203,9 +206,19 @@ export function definePlugin<
     if (name.length === 0) throw new Error("dependency names must not be empty");
     validateDescriptor(dependency.descriptor);
   }
+  if (
+    options.configurationSchema !== undefined &&
+    typeof options.configurationSchema !== "boolean" &&
+    (typeof options.configurationSchema !== "object" ||
+      options.configurationSchema === null ||
+      Array.isArray(options.configurationSchema))
+  ) {
+    throw new Error("configurationSchema must be a JSON Schema object or boolean");
+  }
   return Object.freeze({
     providers: Object.freeze([...options.providers]),
     dependencies: Object.freeze({ ...dependencies }),
+    configurationSchema: options.configurationSchema,
     decodeConfig: options.decodeConfig,
     create: options.create,
     stop: options.stop,
@@ -223,6 +236,9 @@ export function describePortablePlugin<
 ): PortablePluginDescriptor {
   return {
     abi: "lenso.json-request@1",
+    ...(definition.configurationSchema === undefined
+      ? {}
+      : { configuration_schema: definition.configurationSchema }),
     capabilities: definition.providers.map(({ descriptor }) => ({
       capability_id: descriptor.capability_id,
       descriptor_version: descriptor.descriptor_version,
