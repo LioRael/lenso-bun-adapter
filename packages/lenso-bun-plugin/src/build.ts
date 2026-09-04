@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 export const BUILD_API_VERSION = 1 as const;
 export const MAX_GENERATED_FILES = 256;
 export const MAX_GENERATED_BYTES = 16 * 1024 * 1024;
@@ -22,9 +24,17 @@ export type PortableValue =
   | ReadonlyArray<PortableValue>
   | { readonly [key: string]: PortableValue };
 
+export type BuildValue =
+  | null
+  | boolean
+  | number
+  | string
+  | ReadonlyArray<BuildValue | BuildArgument>
+  | { readonly [key: string]: BuildValue | BuildArgument };
+
 export interface ValueArgument {
   readonly kind: "value";
-  readonly value: PortableValue;
+  readonly value: BuildValue;
   readonly span: SourceSpan;
 }
 
@@ -101,6 +111,16 @@ export type Lowering = (
   input: LoweringInput,
 ) => LoweringOutput | Promise<LoweringOutput>;
 
+export interface AllowedProvider {
+  readonly capability_id: string;
+  readonly descriptor_version: string;
+  readonly descriptor_digest: string;
+}
+
+export interface LoweringConstraints {
+  readonly allowedProviders: ReadonlyArray<AllowedProvider>;
+}
+
 export class BuildOutputError extends Error {
   readonly span: SourceSpan;
 
@@ -118,6 +138,7 @@ export class BuildOutputError extends Error {
 export async function runLowering(
   lower: Lowering,
   input: LoweringInput,
+  constraints: LoweringConstraints,
 ): Promise<LoweringOutput> {
   if (input.api_version !== BUILD_API_VERSION) {
     throw new BuildOutputError(
@@ -126,7 +147,55 @@ export async function runLowering(
     );
   }
   const raw: unknown = await lower(input);
-  return validateLoweringOutput(raw, input);
+  const output = validateLoweringOutput(raw, input);
+  validateAllowedProviders(output.providers, constraints.allowedProviders, input.span);
+  return output;
+}
+
+export interface BuildFingerprintInput {
+  readonly sourceClosure: ReadonlyArray<{
+    readonly path: string;
+    readonly sha256: string;
+  }>;
+  readonly contractArtifacts: ReadonlyArray<{
+    readonly path: string;
+    readonly sha256: string;
+  }>;
+  readonly lockedPackages: ReadonlyArray<BuildPackageIdentity>;
+  readonly target: string;
+}
+
+export function fingerprintBuildInputs(input: BuildFingerprintInput): string {
+  const canonical = {
+    source_closure: canonicalFiles(input.sourceClosure, "sourceClosure"),
+    contract_artifacts: canonicalFiles(input.contractArtifacts, "contractArtifacts"),
+    locked_packages: [...input.lockedPackages]
+      .map((value) => ({
+        name: nonemptyString(value.name, "locked package name", EMPTY_SPAN),
+        version: nonemptyString(value.version, "locked package version", EMPTY_SPAN),
+        integrity: nonemptyString(value.integrity, "locked package integrity", EMPTY_SPAN),
+      }))
+      .sort((left, right) =>
+        `${left.name}\u0000${left.version}\u0000${left.integrity}`.localeCompare(
+          `${right.name}\u0000${right.version}\u0000${right.integrity}`,
+        ),
+      ),
+    target: nonemptyString(input.target, "build target", EMPTY_SPAN),
+  };
+  return `sha256:${createHash("sha256").update(JSON.stringify(canonical)).digest("hex")}`;
+}
+
+export function verifyBuildFingerprint(
+  expected: string,
+  input: BuildFingerprintInput,
+): void {
+  const actual = fingerprintBuildInputs(input);
+  if (actual !== expected) {
+    throw new BuildOutputError(
+      `declaration/artifact fingerprint drift: expected ${expected}, received ${actual}`,
+      EMPTY_SPAN,
+    );
+  }
 }
 
 export function validateLoweringOutput(
@@ -231,7 +300,7 @@ function validateProvider(
       `${subject}.descriptor_version`,
       span,
     ),
-    descriptor_digest: nonemptyString(
+    descriptor_digest: canonicalDigest(
       provider.descriptor_digest,
       `${subject}.descriptor_digest`,
       span,
@@ -255,6 +324,64 @@ function validateProvider(
       ),
     ),
   });
+}
+
+function validateAllowedProviders(
+  providers: ReadonlyArray<LoweredProvider>,
+  allowed: ReadonlyArray<AllowedProvider>,
+  span: SourceSpan,
+): void {
+  const identities = new Set(
+    allowed.map((provider) => {
+      const capability = nonemptyString(
+        provider.capability_id,
+        "allowed provider capability_id",
+        span,
+      );
+      const version = nonemptyString(
+        provider.descriptor_version,
+        "allowed provider descriptor_version",
+        span,
+      );
+      const digest = canonicalDigest(
+        provider.descriptor_digest,
+        "allowed provider descriptor_digest",
+        span,
+      );
+      return `${capability}\u0000${version}\u0000${digest}`;
+    }),
+  );
+  for (const provider of providers) {
+    const identity = `${provider.capability_id}\u0000${provider.descriptor_version}\u0000${provider.descriptor_digest}`;
+    if (!identities.has(identity)) {
+      throw new BuildOutputError(
+        `generated provider ${provider.capability_id} does not match an allowed exact contract`,
+        span,
+      );
+    }
+  }
+}
+
+const EMPTY_SPAN: SourceSpan = Object.freeze({ file: "<build>", start: 0, end: 0 });
+
+function canonicalFiles(
+  files: BuildFingerprintInput["sourceClosure"],
+  subject: string,
+): ReadonlyArray<{ readonly path: string; readonly sha256: string }> {
+  const seen = new Set<string>();
+  return [...files]
+    .map((file) => {
+      const path = safeRelativePath(file.path, `${subject} path`, EMPTY_SPAN);
+      if (seen.has(path)) {
+        throw new BuildOutputError(`${subject} contains duplicate path ${path}`, EMPTY_SPAN);
+      }
+      seen.add(path);
+      if (!/^sha256:[0-9a-f]{64}$/u.test(file.sha256)) {
+        throw new BuildOutputError(`${subject} digest must be canonical SHA-256`, EMPTY_SPAN);
+      }
+      return { path, sha256: file.sha256 };
+    })
+    .sort((left, right) => left.path.localeCompare(right.path));
 }
 
 function validateFiles(raw: unknown, span: SourceSpan): GeneratedFile[] {
@@ -387,6 +514,14 @@ function string(value: unknown, subject: string, span: SourceSpan): string {
 function nonemptyString(value: unknown, subject: string, span: SourceSpan): string {
   const result = string(value, subject, span);
   if (result.length === 0) throw new BuildOutputError(`${subject} must not be empty`, span);
+  return result;
+}
+
+function canonicalDigest(value: unknown, subject: string, span: SourceSpan): string {
+  const result = nonemptyString(value, subject, span);
+  if (!/^sha256:[0-9a-f]{64}$/u.test(result)) {
+    throw new BuildOutputError(`${subject} must be a canonical SHA-256 digest`, span);
+  }
   return result;
 }
 

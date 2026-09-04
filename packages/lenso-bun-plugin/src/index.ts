@@ -10,9 +10,9 @@ import type {
   PluginOptionsWithCreate,
   PluginOptionsWithDefaultInstance,
   PluginProvider,
-} from "./authoring.ts";
+} from "./authoring.js";
 
-export * from "./authoring.ts";
+export * from "./authoring.js";
 
 const PROTOCOL_VERSION = 1;
 const VALUE_PROFILE = "lenso-json-value-v1";
@@ -144,7 +144,7 @@ export function definePlugin<
 >(
   options: PluginOptionsWithCreate<Config, Dependencies, Factory>,
 ): PluginDefinition<
-  import("./authoring.ts").CreatedInstance<Factory>,
+  import("./authoring.js").CreatedInstance<Factory>,
   Config,
   Dependencies
 >;
@@ -248,7 +248,7 @@ export function definePlugin(
 type PluginOptionsInstance<
   Config extends ConfigDeclaration<unknown> | undefined,
   Dependencies extends DependencyDeclarations | undefined,
-> = import("./authoring.ts").PluginInputs<Config, Dependencies>;
+> = import("./authoring.js").PluginInputs<Config, Dependencies>;
 
 function concreteProviders<Instance extends object>(
   providers: ReadonlyArray<PluginProvider<Instance>>,

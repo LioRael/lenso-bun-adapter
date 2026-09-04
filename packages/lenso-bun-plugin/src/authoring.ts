@@ -4,7 +4,7 @@ import type {
   CapabilityProviderBinding,
   CapabilityProviderDescriptor,
   ProviderDispatchOutcome,
-} from "./index.ts";
+} from "./index.js";
 
 /** A finite Host-owned scope used while constructing or stopping one instance. */
 export interface LifecycleContext {

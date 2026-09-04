@@ -31,10 +31,10 @@
       "version": "0.1.0",
       "dependencies": {
         "@lenso/contract-runtime": "0.2.0",
+        "typescript": "7.0.2",
       },
       "devDependencies": {
         "@types/bun": "1.4.0",
-        "typescript": "7.0.2",
       },
     },
   },
