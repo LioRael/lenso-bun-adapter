@@ -277,6 +277,12 @@ test("constructs one instance from admitted config and dependency clients, then 
   };
   const plugin = definePlugin({
     dependencies: { store: storeDependency },
+    configurationSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: { prefix: { type: "string", minLength: 1 } },
+      required: ["prefix"],
+    },
     decodeConfig(value) {
       const prefix = (value as { prefix?: unknown }).prefix;
       if (typeof prefix !== "string") throw new Error("prefix is required");
@@ -289,6 +295,12 @@ test("constructs one instance from admitted config and dependency clients, then 
     stop() {
       stopped = true;
     },
+  });
+  expect(describePortablePlugin(plugin).configuration_schema).toEqual({
+    type: "object",
+    additionalProperties: false,
+    properties: { prefix: { type: "string", minLength: 1 } },
+    required: ["prefix"],
   });
   expect(describePortablePlugin(plugin).required_capabilities).toEqual([
     {
