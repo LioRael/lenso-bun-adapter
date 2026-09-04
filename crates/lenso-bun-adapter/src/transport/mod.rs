@@ -396,10 +396,30 @@ impl TransportClient {
         }
     }
 
+    pub(crate) fn supports_managed_lifecycle(&self) -> bool {
+        matches!(self, Self::JsonRpc(transport) if transport.managed_lifecycle)
+    }
+
     pub(crate) fn request(&self, request: WireRequest) -> Result<WireCall, RuntimeFailure> {
         match self {
             Self::Framed(transport) => transport.request(request),
             Self::JsonRpc(transport) => transport.request(request),
+        }
+    }
+
+    pub(crate) fn activate(
+        &self,
+        payload: Value,
+    ) -> LocalBoxFuture<'static, Result<(), RuntimeFailure>> {
+        match self {
+            Self::Framed(_) => Box::pin(futures::future::ready(Err(
+                RuntimeFailure::InvalidResolvedPlan {
+                    detail:
+                        "Bun Plugin lifecycle and dependency imports require the json-rpc-http wire"
+                            .to_owned(),
+                },
+            ))),
+            Self::JsonRpc(transport) => transport.activate(payload),
         }
     }
 

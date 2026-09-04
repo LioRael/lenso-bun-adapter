@@ -85,6 +85,8 @@ pub(crate) struct HandshakeAck {
     pub endpoints: Vec<EndpointDescriptor>,
     #[serde(default)]
     pub session: Option<String>,
+    #[serde(default)]
+    pub managed_lifecycle: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -625,6 +627,7 @@ mod tests {
             max_frame_bytes: 128,
             endpoints: expected.endpoints.clone(),
             session: Some("test-session".to_owned()),
+            managed_lifecycle: false,
         };
         verify_handshake(&expected, &accepted, "example.greeting@1")
             .expect("the exact handshake should pass");

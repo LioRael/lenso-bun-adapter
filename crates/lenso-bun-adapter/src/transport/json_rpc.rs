@@ -3,8 +3,8 @@ use super::{
     HttpClient, Mutex, Ordering, PendingResponses, PendingStreamResponses, ProcessState, Receiver,
     RuntimeFailure, SocketAddr, StreamCall, StreamWireResult, SyncSender, TransportClient, Value,
     Weak, WireCall, WireEventPublish, WireOutcome, WireRequest, WireResult, WireStreamOutcome,
-    build_json_rpc_client, capability_id, json_rpc_failure, json_rpc_runtime, mpsc, oneshot,
-    protocol_violation, remember_request_id, rpc_params, thread, verify_handshake,
+    build_json_rpc_client, capability_id, from_wire_failure, json_rpc_failure, json_rpc_runtime,
+    mpsc, oneshot, protocol_violation, remember_request_id, rpc_params, thread, verify_handshake,
 };
 use futures::{StreamExt as _, stream::FuturesUnordered};
 use tokio::sync::mpsc as tokio_mpsc;
@@ -35,6 +35,7 @@ pub(crate) struct JsonRpcTransport {
     event_admission_capacity: usize,
     stream_admission_capacity: usize,
     pub(super) session: String,
+    pub(super) managed_lifecycle: bool,
     capability: &'static str,
     capability_ids: CapabilityIds,
 }
@@ -105,6 +106,7 @@ pub(crate) fn open_json_rpc(
         .session
         .filter(|session| !session.is_empty())
         .ok_or_else(|| protocol_violation(Some(capability)))?;
+    let managed_lifecycle = actual.managed_lifecycle;
 
     let control_client = Arc::new(build_json_rpc_client(
         address,
@@ -139,6 +141,7 @@ pub(crate) fn open_json_rpc(
         event_admission_capacity: event_queue_capacity,
         stream_admission_capacity: stream_capacity,
         session,
+        managed_lifecycle,
         capability,
         capability_ids,
     });
@@ -436,6 +439,57 @@ fn spawn_json_rpc_stream_cancel_worker(
 }
 
 impl JsonRpcTransport {
+    pub(super) fn activate(
+        self: &Arc<Self>,
+        mut payload: Value,
+    ) -> futures::future::LocalBoxFuture<'static, Result<(), RuntimeFailure>> {
+        if let Value::Object(object) = &mut payload {
+            object.insert("session".to_owned(), Value::String(self.session.clone()));
+        }
+        let client = Arc::clone(&self.client);
+        let process = Arc::clone(&self.process);
+        let capability = self.capability;
+        let (sender, receiver) = oneshot::channel();
+        let spawn = thread::Builder::new()
+            .name("lenso-bun-json-rpc-activate".to_owned())
+            .spawn(move || {
+                let result = json_rpc_runtime().and_then(|runtime| {
+                    runtime
+                        .block_on(
+                            client.request::<Value, _>("lenso.activate", rpc_params![payload]),
+                        )
+                        .map_err(|error| json_rpc_failure("activate", &error, capability))
+                        .and_then(|value| match value {
+                            Value::Bool(true) => Ok(()),
+                            value => serde_json::from_value::<WireOutcome>(value)
+                                .map_err(|_| protocol_violation(Some(capability)))
+                                .and_then(|outcome| match outcome {
+                                    WireOutcome::Runtime { failure } => {
+                                        Err(from_wire_failure(capability, failure))
+                                    }
+                                    _ => Err(protocol_violation(Some(capability))),
+                                }),
+                        })
+                });
+                if let Err(error) = &result {
+                    process.mark_dead(error.clone());
+                }
+                let _ = sender.send(result);
+            });
+        if let Err(error) = spawn {
+            return Box::pin(futures::future::ready(Err(RuntimeFailure::Internal {
+                detail: format!("failed to start Bun activation worker: {error}"),
+            })));
+        }
+        Box::pin(async move {
+            receiver.await.unwrap_or_else(|_| {
+                Err(RuntimeFailure::Internal {
+                    detail: "Bun activation worker ended without a result".to_owned(),
+                })
+            })
+        })
+    }
+
     #[allow(clippy::too_many_lines)]
     pub(super) fn stream_request(
         self: &Arc<Self>,

@@ -9,16 +9,21 @@ use std::{
 };
 
 use futures::{FutureExt, channel::oneshot, future::LocalBoxFuture};
-use lenso_app_plan::{EventAdmissionPlan, ExecutionClassId, PluginInstancePlan, ResolvedAppPlan};
+use lenso_app_plan::{
+    EventAdmissionPlan, ExecutionClassId, PLUGIN_AUTHORING_V2_RUNTIME_PROFILE, PluginInstancePlan,
+    ResolvedAppPlan,
+};
 use lenso_kernel::{
     ActivateContext, DeactivateContext, ManagedResource, NativeEventEndpoint,
     NativeRequestEndpoint, NativeStreamEndpoint, NativeStreamItem, NativeStreamSession,
     PluginFuture, PluginLifecycle, PreparedBinding, PreparedEventBinding, PreparedNativeApp,
     PreparedNativePlugin, PreparedStreamBinding, RuntimeFailure,
 };
+use lenso_runtime_codec::ArtifactCatalog;
 use serde_json::Value;
 
 use crate::{
+    host_imports::start_host_imports,
     protocol::{
         EndpointDescriptor, EventBindingDescriptor, WireOutcome, WireStreamOutcome,
         from_wire_failure, handshake_for, wire_event, wire_request, wire_stream_open,
@@ -68,6 +73,31 @@ pub trait BunCapabilityCodec: std::fmt::Debug + 'static {
         operation: &str,
         value: Value,
     ) -> Result<Box<dyn Any>, RuntimeFailure>;
+    /// Decodes one portable dependency request for its native provider endpoint.
+    fn decode_request(
+        &self,
+        _operation: &str,
+        value: Value,
+    ) -> Result<Box<dyn Any>, RuntimeFailure> {
+        Ok(Box::new(value))
+    }
+    /// Encodes one native dependency success value for the Bun consumer.
+    fn encode_response(&self, _operation: &str, value: &dyn Any) -> Result<Value, RuntimeFailure> {
+        value
+            .downcast_ref::<Value>()
+            .cloned()
+            .ok_or(RuntimeFailure::ProtocolViolation {
+                capability: self.capability_id(),
+            })
+    }
+    /// Encodes one native dependency Domain Error for the Bun consumer.
+    fn encode_domain_error(
+        &self,
+        operation: &str,
+        value: &dyn Any,
+    ) -> Result<Value, RuntimeFailure> {
+        self.encode_response(operation, value)
+    }
     /// Converts one stream open value to a validated portable JSON value.
     fn encode_stream_open(
         &self,
@@ -149,6 +179,7 @@ impl BunAdapterConfig {
 #[derive(Debug)]
 pub struct BunAdapter {
     config: BunAdapterConfig,
+    artifacts: Option<ArtifactCatalog>,
     codecs: BTreeMap<String, Rc<dyn BunCapabilityCodec>>,
 }
 
@@ -157,6 +188,7 @@ impl BunAdapter {
     pub fn new(bun_binary: impl Into<PathBuf>, wire: BunWire) -> Self {
         Self {
             config: BunAdapterConfig::new(bun_binary, wire),
+            artifacts: None,
             codecs: BTreeMap::new(),
         }
     }
@@ -170,6 +202,14 @@ impl BunAdapter {
     #[must_use]
     pub fn with_config(mut self, config: BunAdapterConfig) -> Self {
         self.config = config;
+        self
+    }
+
+    /// Uses exact Host-admitted Artifacts instead of resolving Plan entrypoints
+    /// through one shared working directory.
+    #[must_use]
+    pub fn with_artifacts(mut self, artifacts: ArtifactCatalog) -> Self {
+        self.artifacts = Some(artifacts);
         self
     }
 
@@ -360,7 +400,12 @@ impl BunAdapter {
             endpoints,
             stream_endpoints,
             event_endpoints,
-            BunPluginLifecycle { transport },
+            BunPluginLifecycle {
+                transport,
+                configuration: instance.configuration().to_owned(),
+                codecs: self.codecs.clone(),
+                authoring_version: instance.authoring_version(),
+            },
         ))
     }
 
@@ -371,12 +416,7 @@ impl BunAdapter {
         event_bindings: &[EventBindingDescriptor],
         capability: &'static str,
     ) -> Result<Arc<ProcessState>, RuntimeFailure> {
-        let entrypoint = Path::new(instance.entrypoint());
-        let entrypoint = if entrypoint.is_absolute() {
-            entrypoint.to_owned()
-        } else {
-            self.config.working_directory.join(entrypoint)
-        };
+        let entrypoint = self.entrypoint_for(instance)?;
         if !entrypoint.is_file() {
             return Err(RuntimeFailure::InvalidResolvedPlan {
                 detail: format!(
@@ -416,18 +456,36 @@ impl BunAdapter {
         let process = spawn_process(command, capability)?;
         Ok(process)
     }
+
+    fn entrypoint_for(&self, instance: &PluginInstancePlan) -> Result<PathBuf, RuntimeFailure> {
+        if let Some(artifacts) = &self.artifacts {
+            Ok(artifacts
+                .require(instance.instance_key())?
+                .path()
+                .to_owned())
+        } else {
+            let entrypoint = Path::new(instance.entrypoint());
+            Ok(if entrypoint.is_absolute() {
+                entrypoint.to_owned()
+            } else {
+                self.config.working_directory.join(entrypoint)
+            })
+        }
+    }
 }
 
 impl lenso_kernel::ExecutionAdapter for BunAdapter {
+    fn supports_runtime_profile(&self, authoring_version: u32, profile: &str) -> bool {
+        (authoring_version == 1 && profile == self.execution_class().as_str())
+            || (authoring_version == 2 && profile == PLUGIN_AUTHORING_V2_RUNTIME_PROFILE)
+    }
+
     fn execution_class(&self) -> ExecutionClassId {
         ExecutionClassId::bun_child_process()
     }
 
     fn prepare(&self, plan: &ResolvedAppPlan) -> Result<PreparedNativeApp, RuntimeFailure> {
-        plan.validate()
-            .map_err(|error| RuntimeFailure::InvalidResolvedPlan {
-                detail: error.to_string(),
-            })?;
+        validate_plan(plan)?;
         let mut generations = BTreeMap::new();
         let mut endpoints = BTreeMap::new();
         let mut stream_endpoints = BTreeMap::new();
@@ -483,6 +541,7 @@ impl lenso_kernel::ExecutionAdapter for BunAdapter {
                             binding.provider_instance(),
                             endpoint.clone(),
                         )
+                        .with_requirement_id(binding.requirement_id())
                     })
             })
             .collect();
@@ -501,6 +560,7 @@ impl lenso_kernel::ExecutionAdapter for BunAdapter {
                             binding.provider_instance(),
                             endpoint.clone(),
                         )
+                        .with_requirement_id(binding.requirement_id())
                     })
             })
             .collect();
@@ -519,6 +579,7 @@ impl lenso_kernel::ExecutionAdapter for BunAdapter {
                             binding.provider_instance(),
                             endpoint.clone(),
                         )
+                        .with_requirement_id(binding.requirement_id())
                     })
             })
             .collect();
@@ -541,6 +602,13 @@ impl lenso_kernel::ExecutionAdapter for BunAdapter {
             })?;
         self.prepare_instance(plan, instance)
     }
+}
+
+fn validate_plan(plan: &ResolvedAppPlan) -> Result<(), RuntimeFailure> {
+    plan.validate()
+        .map_err(|error| RuntimeFailure::InvalidResolvedPlan {
+            detail: error.to_string(),
+        })
 }
 
 #[derive(Debug)]
@@ -927,6 +995,44 @@ impl NativeStreamEndpoint for BunStreamEndpoint {
 #[derive(Debug)]
 struct BunPluginLifecycle {
     transport: TransportClient,
+    configuration: String,
+    codecs: BTreeMap<String, Rc<dyn BunCapabilityCodec>>,
+    authoring_version: u32,
+}
+
+impl BunPluginLifecycle {
+    fn managed_activation(&self, context: &ActivateContext, required: bool) -> PluginFuture {
+        if !self.transport.supports_managed_lifecycle() {
+            return Box::pin(futures::future::ready(if required {
+                Err(RuntimeFailure::InvalidResolvedPlan {
+                    detail: "Bun authoring version 2 requires the managed json-rpc-http lifecycle"
+                        .to_owned(),
+                })
+            } else {
+                Ok(())
+            }));
+        }
+        let imports = match start_host_imports(context, &self.codecs) {
+            Ok(imports) => imports,
+            Err(error) => return Box::pin(futures::future::ready(Err(error))),
+        };
+        let configuration = match serde_json::from_str::<Value>(&self.configuration) {
+            Ok(configuration) => configuration,
+            Err(error) => {
+                return Box::pin(futures::future::ready(Err(
+                    RuntimeFailure::InvalidResolvedPlan {
+                        detail: format!("Bun Plugin configuration is not JSON: {error}"),
+                    },
+                )));
+            }
+        };
+        self.transport.activate(serde_json::json!({
+            "configuration": configuration,
+            "imports_url": imports.url,
+            "imports_token": imports.token,
+            "imports": imports.descriptors,
+        }))
+    }
 }
 
 impl PluginLifecycle for BunPluginLifecycle {
@@ -945,14 +1051,32 @@ impl PluginLifecycle for BunPluginLifecycle {
         })
     }
 
+    fn construct(&self, context: ActivateContext) -> PluginFuture {
+        if self.authoring_version == 2 {
+            self.managed_activation(&context, true)
+        } else {
+            Box::pin(futures::future::ready(Ok(())))
+        }
+    }
+
     fn activate(&self, context: ActivateContext) -> PluginFuture {
         let exit = self.transport.exit_waiter();
         let cancellation = context.cancellation();
+        let admission_closed = context.admission().wait_closed();
+        let activation = if self.authoring_version == 1 {
+            self.managed_activation(&context, false)
+        } else {
+            Box::pin(futures::future::ready(Ok(())))
+        };
         let task = async move {
             let exit = exit.fuse();
             let cancellation = cancellation.cancelled().fuse();
-            futures::pin_mut!(exit, cancellation);
-            match futures::future::select(exit, cancellation).await {
+            let admission_closed = admission_closed.fuse();
+            let stop = futures::future::select(cancellation, admission_closed)
+                .map(|_| ())
+                .fuse();
+            futures::pin_mut!(exit, stop);
+            match futures::future::select(exit, stop).await {
                 futures::future::Either::Left((Ok(()), _)) => {
                     panic!("Bun child process exited; supervision must recreate the generation");
                 }
@@ -961,6 +1085,7 @@ impl PluginLifecycle for BunPluginLifecycle {
             }
         };
         Box::pin(async move {
+            activation.await?;
             context
                 .tasks()
                 .spawn_local(Box::pin(task))
@@ -993,6 +1118,9 @@ impl ManagedResource for BunProcessResource {
 
 #[cfg(test)]
 mod tests {
+    use lenso_runtime_codec::ArtifactHandle;
+    use sha2::{Digest as _, Sha256};
+
     use super::*;
 
     #[derive(Debug)]
@@ -1047,5 +1175,33 @@ mod tests {
         assert_eq!(BunAdapter::production("bun").wire(), BunWire::JsonRpcHttp);
         let adapter = BunAdapter::new("bun", BunWire::FramedStdio).with_codec(TestCodec);
         assert_eq!(adapter.wire(), BunWire::FramedStdio);
+    }
+
+    #[test]
+    fn admitted_artifact_replaces_shared_plan_entrypoint() {
+        let temporary = tempfile::tempdir().unwrap();
+        let source = temporary.path().join("selected.js");
+        let bytes = b"export default {};\n";
+        std::fs::write(&source, bytes).unwrap();
+        let digest = format!("sha256:{:x}", Sha256::digest(bytes));
+        let artifact = ArtifactHandle::open(&source, &digest, bytes.len() as u64).unwrap();
+        let admitted_path = artifact.path().to_owned();
+        let artifacts = ArtifactCatalog::new()
+            .with_artifact("plugin", artifact)
+            .unwrap();
+        let instance = PluginInstancePlan::new("plugin", "company.plugin")
+            .with_entrypoint("plugin.js")
+            .with_execution_class(ExecutionClassId::bun_child_process());
+        let adapter = BunAdapter::production("bun").with_artifacts(artifacts);
+
+        assert_eq!(adapter.entrypoint_for(&instance).unwrap(), admitted_path);
+        let missing = PluginInstancePlan::new("other", "company.plugin")
+            .with_entrypoint("selected.js")
+            .with_execution_class(ExecutionClassId::bun_child_process());
+        assert!(matches!(
+            adapter.entrypoint_for(&missing),
+            Err(RuntimeFailure::InvalidResolvedPlan { detail })
+                if detail.contains("no admitted Artifact")
+        ));
     }
 }

@@ -10,13 +10,19 @@ use std::{
 use futures::{StreamExt, stream::FuturesUnordered};
 use lenso_app_plan::{
     AppComposition, CapabilityBinding, CapabilityEndpointPlan, CapabilityRequirementPlan,
-    ExecutionClassId, PluginInstancePlan, RestartPolicy,
+    ExecutionClassId, PLUGIN_AUTHORING_V2_RUNTIME_PROFILE, PluginInstancePlan, RestartPolicy,
 };
 use lenso_kernel::{
     CancellationToken, DeterministicDriver, EventAdmission, EventCapability,
     ExecutionAdapterCatalog, InvocationContext, Kernel, NativeRequestEndpoint, NativeRequestFuture,
     RequestCapability, RuntimeDriver, RuntimeFailure, StreamCapability, StreamEvent,
 };
+#[cfg(feature = "process-test-fixture")]
+use lenso_process_adapter::{EXECUTION_CLASS as PROCESS_EXECUTION_CLASS, ProcessAdapter};
+#[cfg(feature = "process-test-fixture")]
+use lenso_runtime_codec::{ArtifactCatalog, ArtifactHandle, JsonCapabilityCodec};
+#[cfg(feature = "process-test-fixture")]
+use sha2::{Digest as _, Sha256};
 
 use lenso_bun_adapter::{
     BunAdapter, BunAdapterConfig, BunCapabilityCodec, BunEventAction, BunEventBinding,
@@ -192,6 +198,242 @@ impl BunCapabilityCodec for GreetingCodec {
                 capability: CAPABILITY_ID,
             }
         })?))
+    }
+
+    fn decode_request(
+        &self,
+        operation: &str,
+        value: serde_json::Value,
+    ) -> Result<Box<dyn Any>, RuntimeFailure> {
+        if operation != "greet" {
+            return Err(RuntimeFailure::UnknownOperation {
+                capability: CAPABILITY_ID,
+                operation: operation.to_owned(),
+            });
+        }
+        serde_json::from_value::<GreetRequest>(value)
+            .map(|value| Box::new(value) as Box<dyn Any>)
+            .map_err(|_| RuntimeFailure::ProtocolViolation {
+                capability: CAPABILITY_ID,
+            })
+    }
+
+    fn encode_response(
+        &self,
+        operation: &str,
+        value: &dyn Any,
+    ) -> Result<serde_json::Value, RuntimeFailure> {
+        if operation != "greet" {
+            return Err(RuntimeFailure::UnknownOperation {
+                capability: CAPABILITY_ID,
+                operation: operation.to_owned(),
+            });
+        }
+        serde_json::to_value(value.downcast_ref::<GreetResponse>().ok_or(
+            RuntimeFailure::ProtocolViolation {
+                capability: CAPABILITY_ID,
+            },
+        )?)
+        .map_err(|_| RuntimeFailure::ProtocolViolation {
+            capability: CAPABILITY_ID,
+        })
+    }
+
+    fn encode_domain_error(
+        &self,
+        operation: &str,
+        value: &dyn Any,
+    ) -> Result<serde_json::Value, RuntimeFailure> {
+        if operation != "greet" {
+            return Err(RuntimeFailure::UnknownOperation {
+                capability: CAPABILITY_ID,
+                operation: operation.to_owned(),
+            });
+        }
+        serde_json::to_value(value.downcast_ref::<GreetError>().ok_or(
+            RuntimeFailure::ProtocolViolation {
+                capability: CAPABILITY_ID,
+            },
+        )?)
+        .map_err(|_| RuntimeFailure::ProtocolViolation {
+            capability: CAPABILITY_ID,
+        })
+    }
+}
+
+const PROXY_CAPABILITY_ID: &str = "example.greeting-proxy@1";
+
+#[derive(Debug)]
+struct GreetingProxy;
+
+impl RequestCapability for GreetingProxy {
+    type Request = GreetRequest;
+    type Response = GreetResponse;
+    type DomainError = GreetError;
+
+    const ID: &'static str = PROXY_CAPABILITY_ID;
+    const DESCRIPTOR_VERSION: &'static str = DESCRIPTOR_VERSION;
+}
+
+#[derive(Debug)]
+struct GreetingProxyCodec;
+
+impl BunCapabilityCodec for GreetingProxyCodec {
+    fn capability_id(&self) -> &'static str {
+        PROXY_CAPABILITY_ID
+    }
+
+    fn descriptor_version(&self) -> &'static str {
+        DESCRIPTOR_VERSION
+    }
+
+    fn operations(&self) -> &'static [&'static str] {
+        &["greet"]
+    }
+
+    fn encode_request(
+        &self,
+        operation: &str,
+        request: &dyn Any,
+    ) -> Result<serde_json::Value, RuntimeFailure> {
+        if operation != "greet" {
+            return Err(RuntimeFailure::UnknownOperation {
+                capability: PROXY_CAPABILITY_ID,
+                operation: operation.to_owned(),
+            });
+        }
+        serde_json::to_value(request.downcast_ref::<GreetRequest>().ok_or(
+            RuntimeFailure::ProtocolViolation {
+                capability: PROXY_CAPABILITY_ID,
+            },
+        )?)
+        .map_err(|_| RuntimeFailure::ProtocolViolation {
+            capability: PROXY_CAPABILITY_ID,
+        })
+    }
+
+    fn decode_response(
+        &self,
+        _operation: &str,
+        value: serde_json::Value,
+    ) -> Result<Box<dyn Any>, RuntimeFailure> {
+        serde_json::from_value::<GreetResponse>(value)
+            .map(|value| Box::new(value) as Box<dyn Any>)
+            .map_err(|_| RuntimeFailure::ProtocolViolation {
+                capability: PROXY_CAPABILITY_ID,
+            })
+    }
+
+    fn decode_domain_error(
+        &self,
+        _operation: &str,
+        value: serde_json::Value,
+    ) -> Result<Box<dyn Any>, RuntimeFailure> {
+        serde_json::from_value::<GreetError>(value)
+            .map(|value| Box::new(value) as Box<dyn Any>)
+            .map_err(|_| RuntimeFailure::ProtocolViolation {
+                capability: PROXY_CAPABILITY_ID,
+            })
+    }
+
+    fn decode_request(
+        &self,
+        _operation: &str,
+        value: serde_json::Value,
+    ) -> Result<Box<dyn Any>, RuntimeFailure> {
+        serde_json::from_value::<GreetRequest>(value)
+            .map(|value| Box::new(value) as Box<dyn Any>)
+            .map_err(|_| RuntimeFailure::ProtocolViolation {
+                capability: PROXY_CAPABILITY_ID,
+            })
+    }
+
+    fn encode_response(
+        &self,
+        _operation: &str,
+        value: &dyn Any,
+    ) -> Result<serde_json::Value, RuntimeFailure> {
+        serde_json::to_value(value.downcast_ref::<GreetResponse>().ok_or(
+            RuntimeFailure::ProtocolViolation {
+                capability: PROXY_CAPABILITY_ID,
+            },
+        )?)
+        .map_err(|_| RuntimeFailure::ProtocolViolation {
+            capability: PROXY_CAPABILITY_ID,
+        })
+    }
+
+    fn encode_domain_error(
+        &self,
+        _operation: &str,
+        value: &dyn Any,
+    ) -> Result<serde_json::Value, RuntimeFailure> {
+        serde_json::to_value(value.downcast_ref::<GreetError>().ok_or(
+            RuntimeFailure::ProtocolViolation {
+                capability: PROXY_CAPABILITY_ID,
+            },
+        )?)
+        .map_err(|_| RuntimeFailure::ProtocolViolation {
+            capability: PROXY_CAPABILITY_ID,
+        })
+    }
+}
+
+#[cfg(feature = "process-test-fixture")]
+#[derive(Debug)]
+struct ProcessGreetingCodec;
+
+#[cfg(feature = "process-test-fixture")]
+impl JsonCapabilityCodec for ProcessGreetingCodec {
+    fn capability_id(&self) -> &'static str {
+        CAPABILITY_ID
+    }
+
+    fn descriptor_version(&self) -> &'static str {
+        DESCRIPTOR_VERSION
+    }
+
+    fn request_operations(&self) -> &'static [&'static str] {
+        &["greet"]
+    }
+
+    fn encode_request(
+        &self,
+        _operation: &str,
+        request: &dyn Any,
+    ) -> Result<serde_json::Value, RuntimeFailure> {
+        serde_json::to_value(request.downcast_ref::<GreetRequest>().ok_or(
+            RuntimeFailure::ProtocolViolation {
+                capability: CAPABILITY_ID,
+            },
+        )?)
+        .map_err(|_| RuntimeFailure::ProtocolViolation {
+            capability: CAPABILITY_ID,
+        })
+    }
+
+    fn decode_response(
+        &self,
+        _operation: &str,
+        value: serde_json::Value,
+    ) -> Result<Box<dyn Any>, RuntimeFailure> {
+        serde_json::from_value::<GreetResponse>(value)
+            .map(|value| Box::new(value) as Box<dyn Any>)
+            .map_err(|_| RuntimeFailure::ProtocolViolation {
+                capability: CAPABILITY_ID,
+            })
+    }
+
+    fn decode_domain_error(
+        &self,
+        _operation: &str,
+        value: serde_json::Value,
+    ) -> Result<Box<dyn Any>, RuntimeFailure> {
+        serde_json::from_value::<GreetError>(value)
+            .map(|value| Box::new(value) as Box<dyn Any>)
+            .map_err(|_| RuntimeFailure::ProtocolViolation {
+                capability: CAPABILITY_ID,
+            })
     }
 }
 
@@ -761,6 +1003,318 @@ fn greeting_plan_with_concurrency(
     )
     .resolve()
     .expect("Bun cross-runtime plan should resolve")
+}
+
+fn dependency_injection_plan() -> lenso_app_plan::ResolvedAppPlan {
+    let provider = PluginInstancePlan::new("greeting-provider", "fixture.bun.greeting")
+        .with_authoring(2, PLUGIN_AUTHORING_V2_RUNTIME_PROFILE)
+        .with_entrypoint(fixture("sdk-request-provider.ts").to_string_lossy())
+        .with_execution_class(ExecutionClassId::bun_child_process())
+        .with_capability(CapabilityEndpointPlan::new(
+            CAPABILITY_ID,
+            DESCRIPTOR_VERSION,
+            ["greet"],
+        ));
+    let proxy = PluginInstancePlan::new("greeting-proxy", "fixture.bun.greeting-proxy")
+        .with_authoring(2, PLUGIN_AUTHORING_V2_RUNTIME_PROFILE)
+        .with_entrypoint(fixture("sdk-dependency-consumer-provider.ts").to_string_lossy())
+        .with_configuration(r#"{"prefix":"Proxy: "}"#)
+        .with_execution_class(ExecutionClassId::bun_child_process())
+        .with_requirement(
+            CapabilityRequirementPlan::one(CAPABILITY_ID, DESCRIPTOR_VERSION)
+                .with_requirement_id("source"),
+        )
+        .with_capability(CapabilityEndpointPlan::new(
+            PROXY_CAPABILITY_ID,
+            DESCRIPTOR_VERSION,
+            ["greet"],
+        ));
+    let caller = PluginInstancePlan::new("caller", "fixture.bun.caller")
+        .with_authoring(2, PLUGIN_AUTHORING_V2_RUNTIME_PROFILE)
+        .with_entrypoint(fixture("sdk-dependency-caller-provider.ts").to_string_lossy())
+        .with_execution_class(ExecutionClassId::bun_child_process())
+        .with_requirement(
+            CapabilityRequirementPlan::one(PROXY_CAPABILITY_ID, DESCRIPTOR_VERSION)
+                .with_requirement_id("target"),
+        );
+    AppComposition::new(
+        vec![provider, proxy, caller],
+        vec![
+            CapabilityBinding::new(
+                "greeting-proxy",
+                CAPABILITY_ID,
+                DESCRIPTOR_VERSION,
+                "greeting-provider",
+            )
+            .with_requirement_id("source"),
+            CapabilityBinding::new(
+                "caller",
+                PROXY_CAPABILITY_ID,
+                DESCRIPTOR_VERSION,
+                "greeting-proxy",
+            )
+            .with_requirement_id("target"),
+        ],
+    )
+    .resolve()
+    .expect("Bun dependency injection plan should resolve")
+}
+
+fn named_dependency_injection_plan() -> lenso_app_plan::ResolvedAppPlan {
+    let provider = |instance: &str, entrypoint: &str| {
+        PluginInstancePlan::new(instance, format!("fixture.bun.{instance}"))
+            .with_authoring(2, PLUGIN_AUTHORING_V2_RUNTIME_PROFILE)
+            .with_entrypoint(fixture(entrypoint).to_string_lossy())
+            .with_execution_class(ExecutionClassId::bun_child_process())
+            .with_capability(CapabilityEndpointPlan::new(
+                CAPABILITY_ID,
+                DESCRIPTOR_VERSION,
+                ["greet"],
+            ))
+    };
+    let proxy = PluginInstancePlan::new("greeting-proxy", "fixture.bun.dual-proxy")
+        .with_authoring(2, PLUGIN_AUTHORING_V2_RUNTIME_PROFILE)
+        .with_entrypoint(fixture("sdk-dual-dependency-consumer-provider.ts").to_string_lossy())
+        .with_execution_class(ExecutionClassId::bun_child_process())
+        .with_requirement(
+            CapabilityRequirementPlan::one(CAPABILITY_ID, DESCRIPTOR_VERSION)
+                .with_requirement_id("source"),
+        )
+        .with_requirement(
+            CapabilityRequirementPlan::one(CAPABILITY_ID, DESCRIPTOR_VERSION)
+                .with_requirement_id("destination"),
+        )
+        .with_capability(CapabilityEndpointPlan::new(
+            PROXY_CAPABILITY_ID,
+            DESCRIPTOR_VERSION,
+            ["greet"],
+        ));
+    let caller = PluginInstancePlan::new("caller", "fixture.bun.caller")
+        .with_authoring(2, PLUGIN_AUTHORING_V2_RUNTIME_PROFILE)
+        .with_entrypoint(fixture("sdk-dependency-caller-provider.ts").to_string_lossy())
+        .with_execution_class(ExecutionClassId::bun_child_process())
+        .with_requirement(
+            CapabilityRequirementPlan::one(PROXY_CAPABILITY_ID, DESCRIPTOR_VERSION)
+                .with_requirement_id("target"),
+        );
+    AppComposition::new(
+        vec![
+            provider("source-provider", "sdk-request-provider.ts"),
+            provider("destination-provider", "sdk-request-alt-provider.ts"),
+            proxy,
+            caller,
+        ],
+        vec![
+            CapabilityBinding::new(
+                "greeting-proxy",
+                CAPABILITY_ID,
+                DESCRIPTOR_VERSION,
+                "source-provider",
+            )
+            .with_requirement_id("source"),
+            CapabilityBinding::new(
+                "greeting-proxy",
+                CAPABILITY_ID,
+                DESCRIPTOR_VERSION,
+                "destination-provider",
+            )
+            .with_requirement_id("destination"),
+            CapabilityBinding::new(
+                "caller",
+                PROXY_CAPABILITY_ID,
+                DESCRIPTOR_VERSION,
+                "greeting-proxy",
+            )
+            .with_requirement_id("target"),
+        ],
+    )
+    .resolve()
+    .expect("named Bun dependency injection plan should resolve")
+}
+
+fn failed_construction_plan() -> lenso_app_plan::ResolvedAppPlan {
+    AppComposition::new(
+        vec![
+            PluginInstancePlan::new("broken", "fixture.bun.broken")
+                .with_authoring(2, PLUGIN_AUTHORING_V2_RUNTIME_PROFILE)
+                .with_entrypoint(fixture("sdk-create-failure.ts").to_string_lossy())
+                .with_execution_class(ExecutionClassId::bun_child_process()),
+        ],
+        vec![],
+    )
+    .resolve()
+    .expect("failed-construction fixture plan should resolve")
+}
+
+#[test]
+#[ignore = "requires Bun; CI runs ignored cross-runtime tests after installing Bun"]
+fn bun_authoring_v2_create_failure_rejects_startup() {
+    let driver = DeterministicDriver::new();
+    let error = driver
+        .run(Kernel::start(
+            failed_construction_plan(),
+            driver.clone(),
+            ExecutionAdapterCatalog::single(BunAdapter::production(bun_binary())),
+        ))
+        .expect_err("a failed create must reject startup before readiness");
+    assert!(matches!(error, RuntimeFailure::PluginFailure { .. }));
+}
+
+#[test]
+#[ignore = "requires Bun; CI runs ignored cross-runtime tests after installing Bun"]
+fn bun_plugin_calls_its_exact_plan_bound_dependency() {
+    let driver = DeterministicDriver::new();
+    let adapter = BunAdapter::production(bun_binary())
+        .with_codec(GreetingCodec)
+        .with_codec(GreetingProxyCodec);
+    let app = driver
+        .run(Kernel::start(
+            dependency_injection_plan(),
+            driver.clone(),
+            ExecutionAdapterCatalog::single(adapter),
+        ))
+        .expect("Bun dependency App should start");
+    let result = driver
+        .run(app.invoke::<GreetingProxy>(
+            "caller",
+            "greet",
+            GreetRequest {
+                name: "Ada".to_owned(),
+            },
+        ))
+        .expect("proxy request should cross the Host import")
+        .expect("Greeting should succeed");
+    let _ = driver.run(app.shutdown(Duration::from_secs(2)));
+    assert_eq!(result.message, "Proxy: Hello from Bun, Ada!");
+}
+
+#[test]
+#[ignore = "requires Bun; CI runs ignored cross-runtime tests after installing Bun"]
+fn bun_plugin_routes_equal_capabilities_by_requirement_identity() {
+    let driver = DeterministicDriver::new();
+    let adapter = BunAdapter::production(bun_binary())
+        .with_codec(GreetingCodec)
+        .with_codec(GreetingProxyCodec);
+    let app = driver
+        .run(Kernel::start(
+            named_dependency_injection_plan(),
+            driver.clone(),
+            ExecutionAdapterCatalog::single(adapter),
+        ))
+        .expect("named Bun dependency App should start");
+    let result = driver
+        .run(app.invoke::<GreetingProxy>(
+            "caller",
+            "greet",
+            GreetRequest {
+                name: "Ada".to_owned(),
+            },
+        ))
+        .expect("both named Host imports should complete")
+        .expect("Greeting should succeed");
+    let _ = driver.run(app.shutdown(Duration::from_secs(2)));
+    assert_eq!(
+        result.message,
+        "Hello from Bun, Ada source! / Hello from alternate Bun, Ada destination!"
+    );
+}
+
+#[cfg(feature = "process-test-fixture")]
+fn process_dependency_injection_plan() -> lenso_app_plan::ResolvedAppPlan {
+    let provider = PluginInstancePlan::new("greeting-provider", "fixture.rust.greeting")
+        .with_entrypoint("plugin")
+        .with_execution_class(ExecutionClassId::new(PROCESS_EXECUTION_CLASS))
+        .with_capability(CapabilityEndpointPlan::new(
+            CAPABILITY_ID,
+            DESCRIPTOR_VERSION,
+            ["greet"],
+        ));
+    let proxy = PluginInstancePlan::new("greeting-proxy", "fixture.bun.greeting-proxy")
+        .with_authoring(2, PLUGIN_AUTHORING_V2_RUNTIME_PROFILE)
+        .with_entrypoint(fixture("sdk-dependency-consumer-provider.ts").to_string_lossy())
+        .with_configuration(r#"{"prefix":"Proxy: "}"#)
+        .with_execution_class(ExecutionClassId::bun_child_process())
+        .with_requirement(
+            CapabilityRequirementPlan::one(CAPABILITY_ID, DESCRIPTOR_VERSION)
+                .with_requirement_id("source"),
+        )
+        .with_capability(CapabilityEndpointPlan::new(
+            PROXY_CAPABILITY_ID,
+            DESCRIPTOR_VERSION,
+            ["greet"],
+        ));
+    let caller = PluginInstancePlan::new("caller", "fixture.bun.caller")
+        .with_authoring(2, PLUGIN_AUTHORING_V2_RUNTIME_PROFILE)
+        .with_entrypoint(fixture("sdk-dependency-caller-provider.ts").to_string_lossy())
+        .with_execution_class(ExecutionClassId::bun_child_process())
+        .with_requirement(
+            CapabilityRequirementPlan::one(PROXY_CAPABILITY_ID, DESCRIPTOR_VERSION)
+                .with_requirement_id("target"),
+        );
+    AppComposition::new(
+        vec![provider, proxy, caller],
+        vec![
+            CapabilityBinding::new(
+                "greeting-proxy",
+                CAPABILITY_ID,
+                DESCRIPTOR_VERSION,
+                "greeting-provider",
+            )
+            .with_requirement_id("source"),
+            CapabilityBinding::new(
+                "caller",
+                PROXY_CAPABILITY_ID,
+                DESCRIPTOR_VERSION,
+                "greeting-proxy",
+            )
+            .with_requirement_id("target"),
+        ],
+    )
+    .resolve()
+    .expect("Bun to Rust Process dependency plan should resolve")
+}
+
+#[cfg(feature = "process-test-fixture")]
+#[test]
+#[ignore = "requires Bun and the Rust Process fixture"]
+fn bun_plugin_can_replace_its_ts_provider_with_a_rust_process_release() {
+    let executable = Path::new(env!("CARGO_BIN_EXE_lenso-bun-rust-process-fixture"));
+    let bytes = std::fs::read(executable).expect("read Rust Process fixture");
+    let digest = format!("sha256:{}", hex::encode(Sha256::digest(&bytes)));
+    let artifact = ArtifactHandle::open(executable, &digest, bytes.len() as u64)
+        .expect("admit Rust Process fixture artifact");
+    let artifacts = ArtifactCatalog::new()
+        .with_artifact("greeting-provider", artifact)
+        .expect("bind Rust Process artifact");
+    let driver = DeterministicDriver::new();
+    let adapters = ExecutionAdapterCatalog::new()
+        .with_adapter(
+            BunAdapter::production(bun_binary())
+                .with_codec(GreetingCodec)
+                .with_codec(GreetingProxyCodec),
+        )
+        .expect("install Bun Adapter")
+        .with_adapter(ProcessAdapter::new(artifacts).with_codec(ProcessGreetingCodec))
+        .expect("install Process Adapter");
+    let app = driver
+        .run(Kernel::start(
+            process_dependency_injection_plan(),
+            driver.clone(),
+            adapters,
+        ))
+        .expect("Bun to Rust Process App should start");
+    let result = driver
+        .run(app.invoke::<GreetingProxy>(
+            "caller",
+            "greet",
+            GreetRequest {
+                name: "Ada".to_owned(),
+            },
+        ))
+        .expect("proxy request should cross the Process Adapter")
+        .expect("Greeting should succeed");
+    let _ = driver.run(app.shutdown(Duration::from_secs(2)));
+    assert_eq!(result.message, "Proxy: Hello from Rust, Ada!");
 }
 
 #[test]

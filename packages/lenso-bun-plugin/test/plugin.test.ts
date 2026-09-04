@@ -6,6 +6,7 @@ import {
   invokePortablePlugin,
   startPlugin,
   type CapabilityProviderBinding,
+  type CapabilityDependencyBinding,
   type ProviderDispatchOutcome,
 } from "../src/index.ts";
 
@@ -64,6 +65,7 @@ test("one definition exposes the portable QuickJS ABI without Bun transport", as
         request_operations: ["greet"],
       },
     ],
+    required_capabilities: [],
   });
   expect(
     JSON.parse(
@@ -241,4 +243,118 @@ test("rejects duplicate providers and unsupported partial interaction support", 
       ],
     }),
   ).toThrow("supports request Capabilities only");
+});
+
+test("constructs one instance from admitted config and dependency clients, then stops it", async () => {
+  const storeDescriptor = {
+    capability_id: "example.store@1",
+    descriptor_version: "1.0.0",
+    operations: ["get"],
+    stream_operations: [],
+    event_operations: [],
+  } as const;
+  type StoreClient = {
+    get(key: string, context: InvocationContext): Promise<ProviderDispatchOutcome>;
+  };
+  const storeDependency: CapabilityDependencyBinding<StoreClient> = {
+    descriptor: storeDescriptor,
+    createClient: (invoke) => ({
+      get: (key, context) => invoke("get", context, { key }),
+    }),
+  };
+  type Instance = { prefix: string; store: StoreClient };
+  let stopped = false;
+  const provider: CapabilityProviderBinding<Instance> = {
+    descriptor,
+    async invokeRequest(operation, context, payload, instance) {
+      if (operation !== "greet") {
+        return { kind: "runtime", failure: { kind: "unknown_operation", operation } };
+      }
+      const stored = await instance.store.get((payload as { name: string }).name, context);
+      if (stored.kind !== "success") return stored;
+      return { kind: "success", value: `${instance.prefix}${String(stored.value)}` };
+    },
+  };
+  const plugin = definePlugin({
+    dependencies: { store: storeDependency },
+    decodeConfig(value) {
+      const prefix = (value as { prefix?: unknown }).prefix;
+      if (typeof prefix !== "string") throw new Error("prefix is required");
+      return { prefix };
+    },
+    create({ config, dependencies }) {
+      return { prefix: config.prefix, store: dependencies.store };
+    },
+    providers: [provider],
+    stop() {
+      stopped = true;
+    },
+  });
+  expect(describePortablePlugin(plugin).required_capabilities).toEqual([
+    {
+      requirement_id: "store",
+      capability_id: "example.store@1",
+      descriptor_version: "1.0.0",
+      cardinality: "one",
+    },
+  ]);
+  const importToken = "test-import-token-123456";
+  const imports = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    async fetch(request) {
+      expect(request.headers.get("authorization")).toBe(`Bearer ${importToken}`);
+      const envelope = (await request.json()) as {
+        id: string;
+        params: [{ payload: { key: string } }];
+      };
+      return Response.json({
+        jsonrpc: "2.0",
+        id: envelope.id,
+        result: { kind: "success", value: envelope.params[0].payload.key.toUpperCase() },
+      });
+    },
+  });
+  const server = startPlugin(plugin, { managedLifecycle: true });
+  try {
+    const handshake = await rpc(server.port, 1, "lenso.handshake", {
+      protocol_version: 1,
+      value_profile: "lenso-json-value-v1",
+      max_frame_bytes: 65536,
+      endpoints: [descriptor],
+    });
+    const session = (handshake.result as { session: string }).session;
+    expect(
+      (await rpc(server.port, 2, "lenso.request", {
+        request_id: 20,
+        capability_id: descriptor.capability_id,
+        operation: "greet",
+        session,
+        payload: { name: "ada" },
+      })).result,
+    ).toMatchObject({ kind: "runtime", failure: { kind: "protocol_violation" } });
+    expect(
+      (await rpc(server.port, 3, "lenso.activate", {
+        session,
+        configuration: { prefix: "Hello " },
+        imports_url: `http://127.0.0.1:${imports.port}`,
+        imports_token: importToken,
+        imports: [{ requirement_id: "store", ...storeDescriptor }],
+      })).result,
+    ).toBe(true);
+    expect(
+      (await rpc(server.port, 4, "lenso.request", {
+        request_id: 21,
+        capability_id: descriptor.capability_id,
+        operation: "greet",
+        session,
+        payload: { name: "ada" },
+      })).result,
+    ).toEqual({ kind: "success", value: "Hello ADA" });
+    expect((await rpc(server.port, 5, "lenso.shutdown", { session })).result).toBe(true);
+    expect(stopped).toBe(true);
+  } finally {
+    server.stop();
+    imports.stop(true);
+  }
 });

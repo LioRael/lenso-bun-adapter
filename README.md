@@ -8,8 +8,19 @@ The Bun authoring and execution surface for Lenso Plugins:
   Providers without implementing the wire protocol. It remains the low-level
   runtime package behind the SDK.
 - `lenso-bun-adapter` owns the child-process mechanics used by a Rust Host.
+- `lenso-host-runtime` is the Rust executable inside a prepared TypeScript Host
+  distribution. It installs Bun and native Process Adapters, activates the
+  resolved Generation, and recovers exact durable state.
 - the cross-runtime fixtures prove the generated TypeScript contract against
   the Rust Kernel and preserve low-level wire conformance coverage.
+
+Managed Bun Plugins receive their resolved Capability clients during activation.
+The Adapter exposes a bounded, token-protected loopback import endpoint for that
+single process and dispatches every call through the Kernel dependency handle.
+Imports are keyed by stable requirement identity rather than Capability alone,
+so two uses of the same contract route independently.
+The same TypeScript consumer is covered against both a Bun provider and a
+prebuilt Rust Process provider.
 
 This repository consumes released Lenso core packages and does not own Kernel
 semantics or product Plugins.
@@ -38,7 +49,8 @@ the process handshake, or implement the transport.
 Custom Capability contracts can still be generated during authoring. Official
 Capability projections belong in `@lenso/bun`, not beside Rust crate source.
 
-The first public SDK release supports request Capabilities over the production
+The current SDK surface supports request Capabilities, per-Instance construction,
+resolved dependency clients, and bounded stop hooks over the production
 JSON-RPC loopback wire. Stream and Event descriptors fail closed until their
 typed sessions are available. Framed stdio remains a conformance and benchmark
 wire, not a user-facing authoring API.
