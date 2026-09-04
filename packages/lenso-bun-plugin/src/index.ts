@@ -13,6 +13,7 @@ import type {
 } from "./authoring.js";
 
 export * from "./authoring.js";
+export * from "./v2.js";
 
 const PROTOCOL_VERSION = 1;
 const VALUE_PROFILE = "lenso-json-value-v1";
@@ -23,6 +24,7 @@ const DEFAULT_MAX_RETIRED_REQUEST_IDS = 1024;
 export interface CapabilityProviderDescriptor {
   readonly capability_id: string;
   readonly descriptor_version: string;
+  readonly descriptor_digest?: string;
   readonly operations: ReadonlyArray<string>;
   readonly stream_operations: ReadonlyArray<string>;
   readonly event_operations: ReadonlyArray<string>;
@@ -729,6 +731,14 @@ function validateDescriptor(descriptor: CapabilityProviderDescriptor): void {
   if (new Set(descriptor.operations).size !== descriptor.operations.length) {
     throw new Error(
       `Capability Provider ${descriptor.capability_id} declares duplicate Operations`,
+    );
+  }
+  if (
+    descriptor.descriptor_digest !== undefined &&
+    !/^sha256:[0-9a-f]{64}$/u.test(descriptor.descriptor_digest)
+  ) {
+    throw new Error(
+      `Capability Provider ${descriptor.capability_id} has an invalid descriptor digest`,
     );
   }
   for (const operation of [

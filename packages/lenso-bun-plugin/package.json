@@ -42,7 +42,8 @@
     "test": "bun test test"
   },
   "dependencies": {
-    "@lenso/contract-runtime": "0.2.0",
+    "@lenso/contract-runtime": "0.3.0",
+    "@lenso/process-protocol": "0.2.0",
     "typescript": "7.0.2"
   },
   "devDependencies": {
