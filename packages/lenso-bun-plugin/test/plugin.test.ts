@@ -3,7 +3,9 @@ import type { InvocationContext } from "@lenso/contract-runtime";
 import {
   describePortablePlugin,
   definePlugin,
+  dependency,
   invokePortablePlugin,
+  provider,
   startPlugin,
   type CapabilityProviderBinding,
   type CapabilityDependencyBinding,
@@ -77,6 +79,57 @@ test("one definition exposes the portable QuickJS ABI without Bun transport", as
       ),
     ),
   ).toEqual({ ok: { message: "Hello, Ada!" } });
+});
+
+test("records named dependencies and instance-bound providers without running user code", () => {
+  let bound = 0;
+  const contract = {
+    descriptor,
+    createClient() {
+      return { greet: async () => "hello" };
+    },
+  };
+  const definition = definePlugin({
+    dependencies: {
+      source: dependency({ id: "source", contract }),
+      fallbacks: dependency({
+        id: "fallbacks",
+        contract,
+        cardinality: "many",
+      }),
+    },
+    providers: [
+      provider(descriptor, () => {
+        bound += 1;
+        return binding();
+      }),
+    ],
+  });
+
+  expect(bound).toBe(0);
+  expect(definition.dependencies?.source.id).toBe("source");
+  expect(Object.isFrozen(definition.dependencies)).toBe(true);
+  expect(() => startPlugin(definition)).toThrow(
+    "instance-bound providers require the Bun runtime profile v2",
+  );
+});
+
+test("rejects duplicate public dependency ids", () => {
+  const contract = {
+    descriptor,
+    createClient() {
+      return {};
+    },
+  };
+  expect(() =>
+    definePlugin({
+      dependencies: {
+        first: dependency({ id: "store", contract }),
+        second: dependency({ id: "store", contract, cardinality: "optional" }),
+      },
+      providers: [binding()],
+    }),
+  ).toThrow("duplicate dependency id store");
 });
 
 async function rpc(

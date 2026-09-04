@@ -3,6 +3,17 @@ import type {
   RuntimeFailure,
 } from "@lenso/contract-runtime";
 
+import type {
+  ConfigDeclaration,
+  DependencyDeclarations,
+  PluginDefinition,
+  PluginOptionsWithCreate,
+  PluginOptionsWithDefaultInstance,
+  PluginProvider,
+} from "./authoring.ts";
+
+export * from "./authoring.ts";
+
 const PROTOCOL_VERSION = 1;
 const VALUE_PROFILE = "lenso-json-value-v1";
 const DEFAULT_MAX_FRAME_BYTES = 64 * 1024;
@@ -36,61 +47,16 @@ export interface CapabilityProviderBinding<Instance = unknown> {
   ): Promise<ProviderDispatchOutcome>;
 }
 
-export interface CapabilityDependencyBinding<Client> {
-  readonly descriptor: CapabilityProviderDescriptor;
-  createClient(invoke: DependencyInvoker): Client;
-}
-
-export type DependencyInvoker = (
-  operation: string,
-  context: InvocationContext,
-  payload: unknown,
-) => Promise<ProviderDispatchOutcome>;
-
-export type DependencyTable = Readonly<
-  Record<string, CapabilityDependencyBinding<unknown>>
->;
-
-type DependencyClients<Dependencies extends DependencyTable> = {
-  readonly [Name in keyof Dependencies]: Dependencies[Name] extends CapabilityDependencyBinding<
-    infer Client
-  >
-    ? Client
-    : never;
-};
-
-export interface PluginInputs<Dependencies extends DependencyTable, Config> {
-  readonly config: Config;
-  readonly dependencies: DependencyClients<Dependencies>;
-}
-
-export interface BunPluginOptions<
-  Dependencies extends DependencyTable,
-  Config,
-  Instance,
-> {
-  readonly providers: ReadonlyArray<CapabilityProviderBinding<Instance>>;
-  readonly dependencies?: Dependencies;
-  readonly configurationSchema?: boolean | Readonly<Record<string, unknown>>;
-  readonly decodeConfig?: (value: unknown) => Config;
-  readonly create?: (inputs: PluginInputs<Dependencies, Config>) => Instance | Promise<Instance>;
-  readonly stop?: (instance: Instance) => void | Promise<void>;
-  readonly maxConcurrentRequests?: number;
-}
-
-export interface BunPluginDefinition<
-  Dependencies extends DependencyTable = DependencyTable,
-  Config = unknown,
-  Instance = unknown,
-> {
-  readonly providers: ReadonlyArray<CapabilityProviderBinding<Instance>>;
-  readonly dependencies: Dependencies;
-  readonly configurationSchema: boolean | Readonly<Record<string, unknown>> | undefined;
-  readonly decodeConfig: ((value: unknown) => Config) | undefined;
-  readonly create: ((inputs: PluginInputs<Dependencies, Config>) => Instance | Promise<Instance>) | undefined;
-  readonly stop: ((instance: Instance) => void | Promise<void>) | undefined;
-  readonly maxConcurrentRequests: number;
-}
+export type BunPluginOptions = PluginOptionsWithDefaultInstance<undefined, undefined>;
+export type BunPluginDefinition<
+  Instance extends object = object,
+  Config extends ConfigDeclaration<unknown> | undefined =
+    | ConfigDeclaration<unknown>
+    | undefined,
+  Dependencies extends DependencyDeclarations | undefined =
+    | DependencyDeclarations
+    | undefined,
+> = PluginDefinition<Instance, Config, Dependencies>;
 
 /** Runtime-independent descriptor consumed by generated QuickJS and Bun wrappers. */
 export interface PortablePluginDescriptor {
@@ -172,12 +138,41 @@ interface ActivationRequest {
 }
 
 export function definePlugin<
-  Dependencies extends DependencyTable = Readonly<Record<never, never>>,
-  Config = unknown,
-  Instance = PluginInputs<Dependencies, Config>,
+  Config extends ConfigDeclaration<unknown> | undefined,
+  Dependencies extends DependencyDeclarations | undefined,
+  Factory extends (...arguments_: never[]) => object | Promise<object>,
 >(
-  options: BunPluginOptions<Dependencies, Config, Instance>,
-): BunPluginDefinition<Dependencies, Config, Instance> {
+  options: PluginOptionsWithCreate<Config, Dependencies, Factory>,
+): PluginDefinition<
+  import("./authoring.ts").CreatedInstance<Factory>,
+  Config,
+  Dependencies
+>;
+export function definePlugin<
+  Config extends ConfigDeclaration<unknown> | undefined = undefined,
+  Dependencies extends DependencyDeclarations | undefined = undefined,
+>(
+  options: PluginOptionsWithDefaultInstance<Config, Dependencies>,
+): PluginDefinition<
+  PluginOptionsInstance<Config, Dependencies>,
+  Config,
+  Dependencies
+>;
+export function definePlugin(
+  options:
+    | PluginOptionsWithCreate<
+        ConfigDeclaration<unknown> | undefined,
+        DependencyDeclarations | undefined,
+        (...arguments_: never[]) => object | Promise<object>
+      >
+    | PluginOptionsWithDefaultInstance<
+        ConfigDeclaration<unknown> | undefined,
+        DependencyDeclarations | undefined
+      >,
+): PluginDefinition<object> {
+  if (options.providers.length === 0) {
+    throw new Error("a Bun Plugin must register at least one Capability Provider");
+  }
   const seen = new Set<string>();
   for (const provider of options.providers) {
     validateDescriptor(provider.descriptor);
@@ -194,6 +189,29 @@ export function definePlugin<
       throw new Error(
         `@lenso/bun-plugin 0.1 supports request Capabilities only; ${provider.descriptor.capability_id} declares Stream or Event Operations`,
       );
+    }
+  }
+  if (options.dependencies !== undefined) {
+    const dependencyIds = new Set<string>();
+    for (const [name, declaration] of Object.entries(options.dependencies)) {
+      if (name.length === 0) throw new Error("dependency name must not be empty");
+      if (declaration.kind !== "lenso.dependency") {
+        throw new Error(`dependency ${name} is not a dependency(...) declaration`);
+      }
+      if (dependencyIds.has(declaration.id)) {
+        throw new Error(`duplicate dependency id ${declaration.id}`);
+      }
+      dependencyIds.add(declaration.id);
+      validateDescriptor(declaration.contract.descriptor);
+      if (
+        declaration.cardinality !== "one" &&
+        declaration.cardinality !== "optional" &&
+        declaration.cardinality !== "many"
+      ) {
+        throw new Error(
+          `dependency ${declaration.id} has invalid cardinality ${String(declaration.cardinality)}`,
+        );
+      }
     }
   }
   const maxConcurrentRequests =
@@ -216,30 +234,46 @@ export function definePlugin<
     throw new Error("configurationSchema must be a JSON Schema object or boolean");
   }
   return Object.freeze({
+    ...(options.config === undefined ? {} : { config: options.config }),
+    ...(options.dependencies === undefined
+      ? {}
+      : { dependencies: Object.freeze({ ...options.dependencies }) }),
     providers: Object.freeze([...options.providers]),
-    dependencies: Object.freeze({ ...dependencies }),
-    configurationSchema: options.configurationSchema,
-    decodeConfig: options.decodeConfig,
-    create: options.create,
-    stop: options.stop,
+    ...(options.create === undefined ? {} : { create: options.create }),
+    ...(options.stop === undefined ? {} : { stop: options.stop }),
     maxConcurrentRequests,
   });
 }
 
+type PluginOptionsInstance<
+  Config extends ConfigDeclaration<unknown> | undefined,
+  Dependencies extends DependencyDeclarations | undefined,
+> = import("./authoring.ts").PluginInputs<Config, Dependencies>;
+
+function concreteProviders<Instance extends object>(
+  providers: ReadonlyArray<PluginProvider<Instance>>,
+): ReadonlyArray<CapabilityProviderBinding> {
+  const declarations = providers.filter(
+    (provider) => "kind" in provider && provider.kind === "lenso.provider",
+  );
+  if (declarations.length > 0) {
+    throw new Error("instance-bound providers require the Bun runtime profile v2");
+  }
+  return providers as ReadonlyArray<CapabilityProviderBinding>;
+}
+
 /** Describes the same Plugin definition without touching any Bun global API. */
 export function describePortablePlugin<
-  Dependencies extends DependencyTable,
-  Config,
-  Instance,
+  Instance extends object,
+  Config extends ConfigDeclaration<unknown> | undefined,
+  Dependencies extends DependencyDeclarations | undefined,
 >(
-  definition: BunPluginDefinition<Dependencies, Config, Instance>,
+  definition: BunPluginDefinition<Instance, Config, Dependencies>,
 ): PortablePluginDescriptor {
+  const providers = concreteProviders(definition.providers);
   return {
     abi: "lenso.json-request@1",
-    ...(definition.configurationSchema === undefined
-      ? {}
-      : { configuration_schema: definition.configurationSchema }),
-    capabilities: definition.providers.map(({ descriptor }) => ({
+    capabilities: providers.map(({ descriptor }) => ({
       capability_id: descriptor.capability_id,
       descriptor_version: descriptor.descriptor_version,
       request_operations: [...descriptor.operations],
@@ -256,13 +290,17 @@ export function describePortablePlugin<
 }
 
 /** Dispatches the portable QuickJS ABI through the same authored Provider binding. */
-export async function invokePortablePlugin(
-  definition: BunPluginDefinition<DependencyTable, unknown, unknown>,
+export async function invokePortablePlugin<
+  Instance extends object,
+  Config extends ConfigDeclaration<unknown> | undefined,
+  Dependencies extends DependencyDeclarations | undefined,
+>(
+  definition: BunPluginDefinition<Instance, Config, Dependencies>,
   capability: string,
   operation: string,
   requestJson: string,
 ): Promise<string> {
-  const provider = definition.providers.find(
+  const provider = concreteProviders(definition.providers).find(
     ({ descriptor }) => descriptor.capability_id === capability,
   );
   if (provider === undefined) throw new Error(`unknown capability ${capability}`);
@@ -290,10 +328,12 @@ export async function invokePortablePlugin(
 }
 
 export function serve<
-  Dependencies extends DependencyTable,
-  Config,
-  Instance,
->(definition: BunPluginDefinition<Dependencies, Config, Instance>): BunPluginServer {
+  Instance extends object,
+  Config extends ConfigDeclaration<unknown> | undefined,
+  Dependencies extends DependencyDeclarations | undefined,
+>(
+  definition: BunPluginDefinition<Instance, Config, Dependencies>,
+): BunPluginServer {
   const arguments_ = Bun.argv.slice(2);
   const transport = argument(arguments_, "--lenso-transport", "json-rpc-http");
   if (transport !== "json-rpc-http") {
@@ -310,7 +350,7 @@ export function serve<
   const expectedEndpoints = jsonArgument<CapabilityProviderDescriptor[]>(
     arguments_,
     "--lenso-endpoints-json",
-    definition.providers.map(({ descriptor }) => descriptor),
+    concreteProviders(definition.providers).map(({ descriptor }) => descriptor),
   );
   return startPlugin(definition, {
     announceReady: true,
@@ -322,11 +362,11 @@ export function serve<
 }
 
 export function startPlugin<
-  Dependencies extends DependencyTable,
-  Config,
-  Instance,
+  Instance extends object,
+  Config extends ConfigDeclaration<unknown> | undefined,
+  Dependencies extends DependencyDeclarations | undefined,
 >(
-  definition: BunPluginDefinition<Dependencies, Config, Instance>,
+  definition: BunPluginDefinition<Instance, Config, Dependencies>,
   options: StartPluginOptions = {},
 ): BunPluginServer {
   const maxFrameBytes = options.maxFrameBytes ?? DEFAULT_MAX_FRAME_BYTES;
@@ -339,13 +379,14 @@ export function startPlugin<
     throw new Error("maxRetiredRequestIds must be a positive safe integer");
   }
 
+  const providers = concreteProviders(definition.providers);
   const providerByCapability = new Map(
-    definition.providers.map((provider) => [
+    providers.map((provider) => [
       provider.descriptor.capability_id,
       provider,
     ]),
   );
-  const pluginEndpoints = definition.providers.map(({ descriptor }) => descriptor);
+  const pluginEndpoints = providers.map(({ descriptor }) => descriptor);
   const expectedEndpoints = options.expectedEndpoints ?? pluginEndpoints;
   const activeRequests = new Map<number, RequestState>();
   const retiredRequestIds = new Set<number>();
