@@ -15,6 +15,11 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "default": "./dist/index.js"
+    },
+    "./build": {
+      "types": "./dist/build.d.ts",
+      "import": "./dist/build.js",
+      "default": "./dist/build.js"
     }
   },
   "main": "./dist/index.js",
@@ -26,7 +31,7 @@
     "README.md"
   ],
   "scripts": {
-    "build": "node scripts/clean-dist.mjs && bun build src/index.ts --target=bun --format=esm --outdir=dist --entry-naming='[name].js' && tsc -p tsconfig.build.json",
+    "build": "node scripts/clean-dist.mjs && bun build src/index.ts src/build.ts --target=bun --format=esm --outdir=dist --entry-naming='[name].js' && tsc -p tsconfig.build.json",
     "prepack": "bun run build",
     "smoke": "bun test test/package.test.ts",
     "test": "bun test test"
