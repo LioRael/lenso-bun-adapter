@@ -114,4 +114,57 @@ export function bindGreetingProvider(
 export type Provider = GreetingProvider;
 export const bindProvider = bindGreetingProvider;
 
+export type DependencyInvoker = (
+  operation: string,
+  context: InvocationContext,
+  payload: unknown,
+) => Promise<ProviderDispatchOutcome>;
+
+export interface CapabilityDependencyBinding<Client> {
+  readonly descriptor: CapabilityProviderDescriptor;
+  createClient(invoke: DependencyInvoker): Client;
+}
+
+export function bindGreetingDependency(): CapabilityDependencyBinding<GreetingClient> {
+  return {
+    descriptor: {
+      capability_id: CAPABILITY_ID,
+      descriptor_version: DESCRIPTOR_VERSION,
+      operations: ["greet"],
+      stream_operations: [],
+      event_operations: [],
+    },
+    createClient(invoke) {
+      return {
+        async greet(request, context) {
+          const call = context ?? { requestId: "0" as Uint64, cancelled: false };
+          const outcome = await invoke(
+            "greet",
+            call,
+            JSON.parse(encodeGreetRequest(request)) as unknown,
+          );
+          if (outcome.kind === "success") {
+            return {
+              ok: true,
+              value: decodeGreetResponse(JSON.stringify(outcome.value)),
+            };
+          }
+          if (outcome.kind === "domain") {
+            return {
+              ok: false,
+              error: {
+                kind: "domain",
+                error: decodeGreetError(JSON.stringify(outcome.value)),
+              },
+            };
+          }
+          return { ok: false, error: { kind: "runtime", error: outcome.failure } };
+        },
+      };
+    },
+  };
+}
+
+export const bindDependency = bindGreetingDependency;
+
 export const portableValueProfile = lensoContractRuntime.portableValueProfile;

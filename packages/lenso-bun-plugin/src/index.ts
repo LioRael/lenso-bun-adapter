@@ -17,27 +17,76 @@ export interface CapabilityProviderDescriptor {
   readonly event_operations: ReadonlyArray<string>;
 }
 
+interface CapabilityImportDescriptor extends CapabilityProviderDescriptor {
+  readonly requirement_id: string;
+}
+
 export type ProviderDispatchOutcome =
   | { readonly kind: "success"; readonly value: unknown }
   | { readonly kind: "domain"; readonly value: unknown }
   | { readonly kind: "runtime"; readonly failure: RuntimeFailure };
 
-export interface CapabilityProviderBinding {
+export interface CapabilityProviderBinding<Instance = unknown> {
   readonly descriptor: CapabilityProviderDescriptor;
   invokeRequest(
     operation: string,
     context: InvocationContext,
     payload: unknown,
+    instance: Instance,
   ): Promise<ProviderDispatchOutcome>;
 }
 
-export interface BunPluginOptions {
-  readonly providers: ReadonlyArray<CapabilityProviderBinding>;
+export interface CapabilityDependencyBinding<Client> {
+  readonly descriptor: CapabilityProviderDescriptor;
+  createClient(invoke: DependencyInvoker): Client;
+}
+
+export type DependencyInvoker = (
+  operation: string,
+  context: InvocationContext,
+  payload: unknown,
+) => Promise<ProviderDispatchOutcome>;
+
+export type DependencyTable = Readonly<
+  Record<string, CapabilityDependencyBinding<unknown>>
+>;
+
+type DependencyClients<Dependencies extends DependencyTable> = {
+  readonly [Name in keyof Dependencies]: Dependencies[Name] extends CapabilityDependencyBinding<
+    infer Client
+  >
+    ? Client
+    : never;
+};
+
+export interface PluginInputs<Dependencies extends DependencyTable, Config> {
+  readonly config: Config;
+  readonly dependencies: DependencyClients<Dependencies>;
+}
+
+export interface BunPluginOptions<
+  Dependencies extends DependencyTable,
+  Config,
+  Instance,
+> {
+  readonly providers: ReadonlyArray<CapabilityProviderBinding<Instance>>;
+  readonly dependencies?: Dependencies;
+  readonly decodeConfig?: (value: unknown) => Config;
+  readonly create?: (inputs: PluginInputs<Dependencies, Config>) => Instance | Promise<Instance>;
+  readonly stop?: (instance: Instance) => void | Promise<void>;
   readonly maxConcurrentRequests?: number;
 }
 
-export interface BunPluginDefinition {
-  readonly providers: ReadonlyArray<CapabilityProviderBinding>;
+export interface BunPluginDefinition<
+  Dependencies extends DependencyTable = DependencyTable,
+  Config = unknown,
+  Instance = unknown,
+> {
+  readonly providers: ReadonlyArray<CapabilityProviderBinding<Instance>>;
+  readonly dependencies: Dependencies;
+  readonly decodeConfig: ((value: unknown) => Config) | undefined;
+  readonly create: ((inputs: PluginInputs<Dependencies, Config>) => Instance | Promise<Instance>) | undefined;
+  readonly stop: ((instance: Instance) => void | Promise<void>) | undefined;
   readonly maxConcurrentRequests: number;
 }
 
@@ -49,6 +98,12 @@ export interface PortablePluginDescriptor {
     readonly descriptor_version: string;
     readonly request_operations: ReadonlyArray<string>;
   }>;
+  readonly required_capabilities: ReadonlyArray<{
+    readonly requirement_id: string;
+    readonly capability_id: string;
+    readonly descriptor_version: string;
+    readonly cardinality: "one";
+  }>;
 }
 
 export interface StartPluginOptions {
@@ -58,6 +113,7 @@ export interface StartPluginOptions {
   readonly expectedEndpoints?: ReadonlyArray<CapabilityProviderDescriptor>;
   readonly maxRetiredRequestIds?: number;
   readonly announceReady?: boolean;
+  readonly managedLifecycle?: boolean;
 }
 
 export interface BunPluginServer {
@@ -104,10 +160,21 @@ interface JsonRpcEnvelope {
   readonly params?: unknown;
 }
 
-export function definePlugin(options: BunPluginOptions): BunPluginDefinition {
-  if (options.providers.length === 0) {
-    throw new Error("a Bun Plugin must register at least one Capability Provider");
-  }
+interface ActivationRequest {
+  readonly session?: string;
+  readonly configuration: unknown;
+  readonly imports_url: string;
+  readonly imports_token: string;
+  readonly imports: ReadonlyArray<CapabilityImportDescriptor>;
+}
+
+export function definePlugin<
+  Dependencies extends DependencyTable = Readonly<Record<never, never>>,
+  Config = unknown,
+  Instance = PluginInputs<Dependencies, Config>,
+>(
+  options: BunPluginOptions<Dependencies, Config, Instance>,
+): BunPluginDefinition<Dependencies, Config, Instance> {
   const seen = new Set<string>();
   for (const provider of options.providers) {
     validateDescriptor(provider.descriptor);
@@ -131,15 +198,28 @@ export function definePlugin(options: BunPluginOptions): BunPluginDefinition {
   if (!Number.isSafeInteger(maxConcurrentRequests) || maxConcurrentRequests <= 0) {
     throw new Error("maxConcurrentRequests must be a positive safe integer");
   }
+  const dependencies = (options.dependencies ?? {}) as Dependencies;
+  for (const [name, dependency] of Object.entries(dependencies)) {
+    if (name.length === 0) throw new Error("dependency names must not be empty");
+    validateDescriptor(dependency.descriptor);
+  }
   return Object.freeze({
     providers: Object.freeze([...options.providers]),
+    dependencies: Object.freeze({ ...dependencies }),
+    decodeConfig: options.decodeConfig,
+    create: options.create,
+    stop: options.stop,
     maxConcurrentRequests,
   });
 }
 
 /** Describes the same Plugin definition without touching any Bun global API. */
-export function describePortablePlugin(
-  definition: BunPluginDefinition,
+export function describePortablePlugin<
+  Dependencies extends DependencyTable,
+  Config,
+  Instance,
+>(
+  definition: BunPluginDefinition<Dependencies, Config, Instance>,
 ): PortablePluginDescriptor {
   return {
     abi: "lenso.json-request@1",
@@ -148,12 +228,20 @@ export function describePortablePlugin(
       descriptor_version: descriptor.descriptor_version,
       request_operations: [...descriptor.operations],
     })),
+    required_capabilities: Object.entries(definition.dependencies).map(
+      ([requirement_id, { descriptor }]) => ({
+        requirement_id,
+        capability_id: descriptor.capability_id,
+        descriptor_version: descriptor.descriptor_version,
+        cardinality: "one" as const,
+      }),
+    ),
   };
 }
 
 /** Dispatches the portable QuickJS ABI through the same authored Provider binding. */
 export async function invokePortablePlugin(
-  definition: BunPluginDefinition,
+  definition: BunPluginDefinition<DependencyTable, unknown, unknown>,
   capability: string,
   operation: string,
   requestJson: string,
@@ -173,6 +261,7 @@ export async function invokePortablePlugin(
     operation,
     context,
     JSON.parse(requestJson) as unknown,
+    Object.freeze({ config: Object.freeze({}), dependencies: Object.freeze({}) }),
   );
   switch (outcome.kind) {
     case "success":
@@ -184,7 +273,11 @@ export async function invokePortablePlugin(
   }
 }
 
-export function serve(definition: BunPluginDefinition): BunPluginServer {
+export function serve<
+  Dependencies extends DependencyTable,
+  Config,
+  Instance,
+>(definition: BunPluginDefinition<Dependencies, Config, Instance>): BunPluginServer {
   const arguments_ = Bun.argv.slice(2);
   const transport = argument(arguments_, "--lenso-transport", "json-rpc-http");
   if (transport !== "json-rpc-http") {
@@ -205,14 +298,19 @@ export function serve(definition: BunPluginDefinition): BunPluginServer {
   );
   return startPlugin(definition, {
     announceReady: true,
+    managedLifecycle: true,
     expectedEndpoints,
     maxFrameBytes,
     port,
   });
 }
 
-export function startPlugin(
-  definition: BunPluginDefinition,
+export function startPlugin<
+  Dependencies extends DependencyTable,
+  Config,
+  Instance,
+>(
+  definition: BunPluginDefinition<Dependencies, Config, Instance>,
   options: StartPluginOptions = {},
 ): BunPluginServer {
   const maxFrameBytes = options.maxFrameBytes ?? DEFAULT_MAX_FRAME_BYTES;
@@ -238,6 +336,12 @@ export function startPlugin(
   let session: string | undefined;
   let admittedHandshake: Handshake | undefined;
   let accepting = true;
+  const managedLifecycle = options.managedLifecycle ?? false;
+  let instance: Instance | undefined =
+    !managedLifecycle &&
+    Object.keys(definition.dependencies).length === 0 && definition.create === undefined
+      ? Object.freeze({ config: Object.freeze({}), dependencies: Object.freeze({}) }) as Instance
+      : undefined;
 
   const retire = (requestId: number): void => {
     while (retiredRequestIds.size >= maxRetiredRequestIds) {
@@ -293,6 +397,7 @@ export function startPlugin(
           value_profile: VALUE_PROFILE,
           max_frame_bytes: maxFrameBytes,
           endpoints: Array.isArray(handshake?.endpoints) ? handshake.endpoints : [],
+          managed_lifecycle: managedLifecycle,
           ...(session === undefined ? {} : { session }),
         });
       }
@@ -319,6 +424,37 @@ export function startPlugin(
         return jsonRpcResult(id, true);
       }
 
+      if (envelope.method === "lenso.activate") {
+        const activation = objectParam(params) as ActivationRequest | undefined;
+        if (
+          !activation ||
+          !managedLifecycle ||
+          !hasSession(activation.session, session, admittedHandshake) ||
+          instance !== undefined ||
+          activeRequests.size !== 0
+        ) {
+          return jsonRpcResult(id, protocolViolation("invalid activation"));
+        }
+        try {
+          const dependencies = createDependencyClients(definition, activation);
+          const rawConfig = activation.configuration;
+          const config = (definition.decodeConfig?.(rawConfig) ?? rawConfig) as Config;
+          const inputs = Object.freeze({ config, dependencies });
+          instance = definition.create
+            ? await definition.create(inputs)
+            : (inputs as Instance);
+          if (instance === undefined) {
+            throw new Error("Plugin create must return a complete instance");
+          }
+          return jsonRpcResult(id, true);
+        } catch (error) {
+          return jsonRpcResult(id, {
+            kind: "runtime",
+            failure: { kind: "plugin_failure", detail: errorMessage(error) },
+          });
+        }
+      }
+
       if (envelope.method === "lenso.shutdown") {
         const shutdownSession = objectParam(params)?.session;
         if (
@@ -332,11 +468,26 @@ export function startPlugin(
         }
         accepting = false;
         for (const state of activeRequests.values()) state.cancelled = true;
+        if (instance !== undefined && definition.stop !== undefined) {
+          try {
+            await definition.stop(instance);
+          } catch (error) {
+            return jsonRpcResult(id, {
+              kind: "runtime",
+              failure: { kind: "plugin_failure", detail: errorMessage(error) },
+            });
+          }
+        }
         setTimeout(() => server.stop(false), 0);
         return jsonRpcResult(id, true);
       }
 
-      if (envelope.method !== "lenso.request" || !accepting || !admittedHandshake) {
+      if (
+        envelope.method !== "lenso.request" ||
+        !accepting ||
+        !admittedHandshake ||
+        instance === undefined
+      ) {
         return jsonRpcResult(id, protocolViolation("request before handshake"));
       }
 
@@ -382,6 +533,7 @@ export function startPlugin(
             wireRequest.operation,
             context,
             wireRequest.payload,
+            instance,
           );
           if (state.deadlineExceeded) {
             outcome = deadlineExceeded(wireRequest.request_id);
@@ -418,6 +570,92 @@ export function startPlugin(
       server.stop(closeActiveConnections);
     },
   };
+}
+
+function createDependencyClients<
+  Dependencies extends DependencyTable,
+  Config,
+  Instance,
+>(
+  definition: BunPluginDefinition<Dependencies, Config, Instance>,
+  activation: ActivationRequest,
+): DependencyClients<Dependencies> {
+  if (
+    typeof activation.imports_url !== "string" ||
+    !activation.imports_url.startsWith("http://127.0.0.1:") ||
+    typeof activation.imports_token !== "string" ||
+    activation.imports_token.length < 16 ||
+    !Array.isArray(activation.imports)
+  ) {
+    throw new Error("Host imports activation data is invalid");
+  }
+  const admitted = new Map(
+    activation.imports.map((descriptor) => [descriptor.requirement_id, descriptor]),
+  );
+  const admittedByCapability = new Map<string, CapabilityImportDescriptor[]>();
+  for (const descriptor of activation.imports) {
+    const matches = admittedByCapability.get(descriptor.capability_id) ?? [];
+    matches.push(descriptor);
+    admittedByCapability.set(descriptor.capability_id, matches);
+  }
+  const claimed = new Set<string>();
+  const clients: Record<string, unknown> = {};
+  for (const [name, dependency] of Object.entries(definition.dependencies)) {
+    const exact = admitted.get(name);
+    const legacy = admittedByCapability.get(dependency.descriptor.capability_id);
+    const descriptor = exact ?? (legacy?.length === 1 ? legacy[0] : undefined);
+    if (!descriptor || !sameEndpoints([descriptor], [dependency.descriptor])) {
+      throw new Error(`Host did not admit dependency ${name}`);
+    }
+    if (claimed.has(descriptor.requirement_id)) {
+      throw new Error(`Host import ${descriptor.requirement_id} was claimed more than once`);
+    }
+    claimed.add(descriptor.requirement_id);
+    clients[name] = dependency.createClient(async (operation, context, payload) => {
+      if (!descriptor.operations.includes(operation)) {
+        return {
+          kind: "runtime",
+          failure: { kind: "unknown_operation", operation },
+        };
+      }
+      const response = await fetch(activation.imports_url, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${activation.imports_token}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: (context as InvocationContext & { readonly wireRequestId?: number }).wireRequestId ?? context.requestId,
+          method: "lenso.import",
+          params: [{
+            request_id: (context as InvocationContext & { readonly wireRequestId?: number }).wireRequestId ?? context.requestId,
+            requirement_id: descriptor.requirement_id,
+            capability_id: descriptor.capability_id,
+            operation,
+            deadline_nanos: (context as InvocationContext & { readonly deadlineNanos?: number }).deadlineNanos,
+            caller_instance: context.callerInstance,
+            extensions: (context as InvocationContext & {
+              readonly wireExtensions?: ReadonlyArray<WireInvocationExtension>;
+            }).wireExtensions,
+            payload,
+          }],
+        }),
+      });
+      if (!response.ok) {
+        return {
+          kind: "runtime",
+          failure: { kind: "plugin_failure", detail: `Host import returned HTTP ${response.status}` },
+        };
+      }
+      const envelope = (await response.json()) as { result?: ProviderDispatchOutcome };
+      return envelope.result ?? {
+        kind: "runtime",
+        failure: { kind: "protocol_violation" },
+      };
+    });
+  }
+  return Object.freeze(clients) as DependencyClients<Dependencies>;
 }
 
 function validateDescriptor(descriptor: CapabilityProviderDescriptor): void {
@@ -494,7 +732,22 @@ function sameEndpoints(
   left: ReadonlyArray<CapabilityProviderDescriptor>,
   right: ReadonlyArray<CapabilityProviderDescriptor>,
 ): boolean {
-  return JSON.stringify(left) === JSON.stringify(right);
+  return left.length === right.length && left.every((endpoint, index) => {
+    const expected = right[index];
+    return expected !== undefined &&
+      endpoint.capability_id === expected.capability_id &&
+      endpoint.descriptor_version === expected.descriptor_version &&
+      sameStrings(endpoint.operations, expected.operations) &&
+      sameStrings(endpoint.stream_operations, expected.stream_operations) &&
+      sameStrings(endpoint.event_operations, expected.event_operations);
+  });
+}
+
+function sameStrings(
+  left: ReadonlyArray<string>,
+  right: ReadonlyArray<string>,
+): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
 function hasSession(
@@ -537,11 +790,18 @@ function invocationContext(
     get cancelled() {
       return state.cancelled || state.deadlineExceeded;
     },
+    ...(request.deadline_nanos == null
+      ? {}
+      : { deadlineNanos: request.deadline_nanos }),
+    wireRequestId: request.request_id,
+    ...(request.extensions === undefined
+      ? {}
+      : { wireExtensions: request.extensions }),
     ...(request.caller_instance == null
       ? {}
       : { callerInstance: request.caller_instance }),
     ...(extensions === undefined ? {} : { extensions }),
-  };
+  } as unknown as InvocationContext;
 }
 
 function extensionRecord(

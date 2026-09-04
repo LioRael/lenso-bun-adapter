@@ -652,6 +652,7 @@ fn handle_handshake(actual: &Handshake, state: &ProviderState) -> HandshakeAck {
         max_frame_bytes: actual.max_frame_bytes,
         endpoints: actual.endpoints.clone(),
         session: None,
+        managed_lifecycle: false,
     };
     if verify_handshake(&state.expected, &candidate, state.capability).is_err() {
         return HandshakeAck {

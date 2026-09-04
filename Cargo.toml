@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/lenso-bun-adapter",
+    "crates/lenso-host-runtime",
     "crates/lenso-libbun-adapter",
 ]
 
