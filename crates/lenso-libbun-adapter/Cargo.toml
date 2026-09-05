@@ -11,7 +11,7 @@ description = "Experimental in-process libbun Execution Adapter for Lenso reques
 futures.workspace = true
 libbun = { version = "0.2.3", git = "https://github.com/enki/libbun", rev = "15669af8f832be36e9184372c15f2ef0e4cc3b60", features = ["dynamic-loading"] }
 lenso-app-plan = { version = "0.4.1" }
-lenso-bun-adapter = { version = "0.1.5", path = "../lenso-bun-adapter" }
+lenso-bun-adapter = { version = "0.1.6", path = "../lenso-bun-adapter" }
 lenso-kernel = { version = "0.3.2" }
 serde.workspace = true
 serde_json.workspace = true
