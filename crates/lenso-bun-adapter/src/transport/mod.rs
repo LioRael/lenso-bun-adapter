@@ -423,6 +423,13 @@ impl TransportClient {
         }
     }
 
+    pub(crate) fn deactivate(&self) -> LocalBoxFuture<'static, Result<(), RuntimeFailure>> {
+        match self {
+            Self::JsonRpc(transport) if transport.managed_lifecycle => transport.deactivate(),
+            Self::Framed(_) | Self::JsonRpc(_) => Box::pin(futures::future::ready(Ok(()))),
+        }
+    }
+
     pub(crate) fn publish_event(
         &self,
         mut event: WireEventPublish,

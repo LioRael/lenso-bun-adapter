@@ -15,7 +15,8 @@ use lenso_app_plan::{
 use lenso_kernel::{
     CancellationToken, DeterministicDriver, EventAdmission, EventCapability,
     ExecutionAdapterCatalog, InvocationContext, Kernel, NativeRequestEndpoint, NativeRequestFuture,
-    RequestCapability, RuntimeDriver, RuntimeFailure, StreamCapability, StreamEvent,
+    RequestCapability, RuntimeDriver, RuntimeFailure, ShutdownOutcome, StreamCapability,
+    StreamEvent,
 };
 #[cfg(feature = "process-test-fixture")]
 use lenso_process_adapter::{EXECUTION_CLASS as PROCESS_EXECUTION_CLASS, ProcessAdapter};
@@ -1146,6 +1147,21 @@ fn failed_construction_plan() -> lenso_app_plan::ResolvedAppPlan {
     .expect("failed-construction fixture plan should resolve")
 }
 
+fn stop_hook_plan(marker: &Path) -> lenso_app_plan::ResolvedAppPlan {
+    AppComposition::new(
+        vec![
+            PluginInstancePlan::new("lifecycle", "fixture.bun.lifecycle")
+                .with_authoring(2, PLUGIN_AUTHORING_V2_RUNTIME_PROFILE)
+                .with_entrypoint(fixture("sdk-stop-hook.ts").to_string_lossy())
+                .with_execution_class(ExecutionClassId::bun_child_process())
+                .with_configuration(serde_json::json!({ "marker": marker }).to_string()),
+        ],
+        vec![],
+    )
+    .resolve()
+    .expect("lifecycle fixture plan should resolve")
+}
+
 #[test]
 #[ignore = "requires Bun; CI runs ignored cross-runtime tests after installing Bun"]
 fn bun_authoring_v2_create_failure_rejects_startup() {
@@ -1158,6 +1174,28 @@ fn bun_authoring_v2_create_failure_rejects_startup() {
         ))
         .expect_err("a failed create must reject startup before readiness");
     assert!(matches!(error, RuntimeFailure::PluginFailure { .. }));
+}
+
+#[test]
+#[ignore = "requires Bun; CI runs ignored cross-runtime tests after installing Bun"]
+fn bun_authoring_v2_stop_hook_runs_before_process_release() {
+    let temporary = tempfile::tempdir().unwrap();
+    let marker = temporary.path().join("stopped.txt");
+    let driver = DeterministicDriver::new();
+    let app = driver
+        .run(Kernel::start(
+            stop_hook_plan(&marker),
+            driver.clone(),
+            ExecutionAdapterCatalog::single(BunAdapter::production(bun_binary())),
+        ))
+        .expect("lifecycle fixture should start");
+
+    assert_eq!(
+        driver.run(app.shutdown(Duration::from_secs(2))),
+        ShutdownOutcome::Clean
+    );
+
+    assert_eq!(std::fs::read_to_string(marker).unwrap(), "stopped\n");
 }
 
 #[test]

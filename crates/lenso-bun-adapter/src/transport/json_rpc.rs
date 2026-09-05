@@ -490,6 +490,47 @@ impl JsonRpcTransport {
         })
     }
 
+    pub(super) fn deactivate(
+        self: &Arc<Self>,
+    ) -> futures::future::LocalBoxFuture<'static, Result<(), RuntimeFailure>> {
+        let client = Arc::clone(&self.client);
+        let session = self.session.clone();
+        let capability = self.capability;
+        let (sender, receiver) = oneshot::channel();
+        let spawn = thread::Builder::new()
+            .name("lenso-bun-json-rpc-deactivate".to_owned())
+            .spawn(move || {
+                let result = json_rpc_runtime().and_then(|runtime| {
+                    runtime
+                        .block_on(client.request::<bool, _>(
+                            "lenso.shutdown",
+                            rpc_params![serde_json::json!({ "session": session })],
+                        ))
+                        .map_err(|error| json_rpc_failure("deactivate", &error, capability))
+                        .and_then(|stopped| {
+                            if stopped {
+                                Ok(())
+                            } else {
+                                Err(protocol_violation(Some(capability)))
+                            }
+                        })
+                });
+                let _ = sender.send(result);
+            });
+        if let Err(error) = spawn {
+            return Box::pin(futures::future::ready(Err(RuntimeFailure::Internal {
+                detail: format!("failed to start Bun deactivation worker: {error}"),
+            })));
+        }
+        Box::pin(async move {
+            receiver.await.unwrap_or_else(|_| {
+                Err(RuntimeFailure::Internal {
+                    detail: "Bun deactivation worker ended without a result".to_owned(),
+                })
+            })
+        })
+    }
+
     #[allow(clippy::too_many_lines)]
     pub(super) fn stream_request(
         self: &Arc<Self>,
