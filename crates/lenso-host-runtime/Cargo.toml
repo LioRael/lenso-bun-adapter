@@ -1,6 +1,6 @@
 [package]
 name = "lenso-host-runtime"
-version = "0.1.1"
+version = "0.1.2"
 edition.workspace = true
 license.workspace = true
 publish = true
@@ -9,7 +9,7 @@ description = "Prepared-distribution runtime for TypeScript-authored Lenso Hosts
 
 [dependencies]
 lenso = { version = "0.5.2", features = ["host"] }
-lenso-bun-adapter = { version = "0.1.6", path = "../lenso-bun-adapter" }
+lenso-bun-adapter = { version = "0.1.7", path = "../lenso-bun-adapter" }
 lenso-host-distribution = "0.1.0"
 lenso-kernel = "0.3.2"
 lenso-plugin-control-plane = "0.4.1"
