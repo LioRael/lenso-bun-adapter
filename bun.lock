@@ -31,7 +31,7 @@
       "version": "0.2.2",
       "dependencies": {
         "@lenso/contract-runtime": "0.3.0",
-        "@lenso/process-protocol": "0.2.1",
+        "@lenso/process-protocol": "0.2.2",
         "typescript": "7.0.2",
       },
       "devDependencies": {
@@ -46,7 +46,7 @@
 
     "@lenso/contract-runtime": ["@lenso/contract-runtime@0.3.0", "", {}, "sha512-3JGwX4fCsHBsP49arxbHKys91f+3AKKN8+Vsn9J4yyXn2oHUDoAlq67yU5ABc1WzchTEYmgki7GmnQx60XkRvQ=="],
 
-    "@lenso/process-protocol": ["@lenso/process-protocol@0.2.1", "", {}, "sha512-F4GSafwSCGRy/6otZEVpgC7LmmK7vay2Xqg4bwQjYcSeE77F96fh+8XMxY+iVI/ANzs4f+YnKIi5JeeDGVaBPw=="],
+    "@lenso/process-protocol": ["@lenso/process-protocol@0.2.2", "", {}, "sha512-KDjyiUpxPfD3n4F6RCuwZk5tPmf4S9uDujEs8VrUfrUJiODn56euKySKJRYKKfGf3MjQFCLfny8JJhUIAjGbvA=="],
 
     "@types/bun": ["@types/bun@1.4.0", "", { "dependencies": { "bun-types": "1.4.0" } }, "sha512-K+lZULY23vRgK/CfTjFIV+tyifaNdSMlPh9j+6mQ/cLfpOznLyAuzgV/JQysyECpkBQLVMSyvjlr2fBUSA9wFQ=="],
 
@@ -99,5 +99,7 @@
     "undici-types": ["undici-types@8.3.0", "", {}, "sha512-j375ScV60dom+YkPFIfTLcOiPxkN/buHz5GobjLhixFuANaNs3C9l4GmrWqejgXWJ7BbJcFYpTEUkS1Ge8bpZQ=="],
 
     "@lenso/bun/@lenso/bun-plugin": ["@lenso/bun-plugin@0.2.1", "", { "dependencies": { "@lenso/contract-runtime": "0.3.0", "@lenso/process-protocol": "0.2.1", "typescript": "7.0.2" } }, "sha512-kdOFM/BAA28Je/xNOkcMkLDcZmiI+ClPgVDBkkejo/Mto1ofnG0ffXYfrtlZrYTWYKdozIeky+UYK90z6utpBA=="],
+
+    "@lenso/bun/@lenso/bun-plugin/@lenso/process-protocol": ["@lenso/process-protocol@0.2.1", "", {}, "sha512-F4GSafwSCGRy/6otZEVpgC7LmmK7vay2Xqg4bwQjYcSeE77F96fh+8XMxY+iVI/ANzs4f+YnKIi5JeeDGVaBPw=="],
   }
 }
