@@ -22,6 +22,7 @@ import type {
 export interface SymbolOrigin {
   readonly file: string;
   readonly name: string;
+  readonly module?: string;
 }
 
 export type SymbolMeaning =
@@ -308,7 +309,20 @@ class StaticEvaluator {
 
   async meaning(expression: ts.Expression): Promise<SymbolMeaning | undefined> {
     const target = ts.isPropertyAccessExpression(expression) ? expression.name : expression;
-    const symbol = await this.resolveSymbol(await this.symbolFor(target));
+    let unresolved = await this.symbolFor(target);
+    let module: string | undefined;
+    const seen = new Set<TypeScriptSymbol>();
+    while (unresolved !== undefined && (unresolved.flags & SymbolFlags.Alias) !== 0) {
+      if (seen.has(unresolved)) return undefined;
+      seen.add(unresolved);
+      module = (await this.moduleForSymbol(unresolved)) ?? module;
+      unresolved = await this.#checker.getAliasedSymbol(unresolved);
+      if (await this.#checker.isUnknownSymbol(unresolved)) return undefined;
+    }
+    if (ts.isPropertyAccessExpression(expression)) {
+      module = (await this.moduleForSymbol(await this.symbolFor(expression.expression))) ?? module;
+    }
+    const symbol = unresolved;
     if (symbol === undefined) return undefined;
     const declaration = symbol.valueDeclaration
       ? await symbol.valueDeclaration.resolve()
@@ -320,7 +334,29 @@ class StaticEvaluator {
     return this.#classify({
       file: declaration.getSourceFile().fileName,
       name: symbol.name,
+      ...(module === undefined ? {} : { module }),
     });
+  }
+
+  private async moduleForSymbol(symbol: TypeScriptSymbol | undefined): Promise<string | undefined> {
+    if (symbol === undefined) return undefined;
+    const references = [symbol.valueDeclaration, ...symbol.declarations].filter(
+      (value): value is NonNullable<typeof value> => value !== undefined,
+    );
+    for (const reference of references) {
+      let node: ts.Node | undefined = await reference.resolve();
+      while (node !== undefined && !ts.isSourceFile(node)) {
+        if (
+          (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) &&
+          node.moduleSpecifier !== undefined &&
+          ts.isStringLiteralLikeNode(node.moduleSpecifier)
+        ) {
+          return node.moduleSpecifier.text;
+        }
+        node = node.parent;
+      }
+    }
+    return undefined;
   }
 
   error(node: ts.Node, message: string, fallback: ts.SourceFile): DeclarationExtractionError {

@@ -65,6 +65,30 @@ test("accepts a product-neutral third-party lowering", async () => {
   expect(output.providers[0]?.capability_id).toBe("example.operation@1");
 });
 
+test("finds handlers nested inside static declaration arrays", async () => {
+  const nestedInput: LoweringInput = {
+    ...input,
+    arguments: [
+      {
+        kind: "value",
+        value: [
+          {
+            kind: "declaration",
+            package: input.package,
+            export_name: "operation",
+            arguments: [handler],
+            span,
+          },
+        ],
+        span,
+      },
+    ],
+  };
+  await expect(
+    runLowering(async () => validOutput(), nestedInput, constraints),
+  ).resolves.toMatchObject({ api_version: BUILD_API_VERSION });
+});
+
 test("validates product declaration and handler metadata without naming a product", () => {
   const metadata = validateBuildPackageMetadata({
     api_version: 1,

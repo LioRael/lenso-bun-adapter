@@ -595,8 +595,28 @@ function collectHandlerReferences(
     if (argument.kind === "declaration") {
       collectHandlerReferences(argument.arguments, references);
     }
+    if (argument.kind === "value") {
+      collectHandlerValue(argument.value, references);
+    }
   }
   return references;
+}
+
+function collectHandlerValue(value: BuildValue, references: Set<string>): void {
+  if (Array.isArray(value)) {
+    for (const child of value) collectHandlerArgument(child, references);
+    return;
+  }
+  if (typeof value !== "object" || value === null) return;
+  for (const child of Object.values(value)) collectHandlerArgument(child, references);
+}
+
+function collectHandlerArgument(value: BuildValue | BuildArgument, references: Set<string>): void {
+  if (typeof value === "object" && value !== null && "kind" in value && "span" in value) {
+    collectHandlerReferences([value as BuildArgument], references);
+  } else {
+    collectHandlerValue(value as BuildValue, references);
+  }
 }
 
 function validateSpan(
