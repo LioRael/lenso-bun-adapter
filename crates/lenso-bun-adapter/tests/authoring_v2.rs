@@ -458,9 +458,13 @@ impl JsonCapabilityCodec for StoreCodec {
     }
 }
 
+type PendingReceive = futures::channel::oneshot::Sender<Result<NativeStreamItem, RuntimeFailure>>;
+
 #[derive(Debug)]
 struct NativeChannelStream {
     events: Rc<RefCell<VecDeque<NativeStreamItem>>>,
+    blocked: bool,
+    pending: Rc<RefCell<Option<PendingReceive>>>,
     cancellations: Arc<AtomicUsize>,
 }
 
@@ -485,6 +489,15 @@ impl NativeStreamSession for NativeChannelStream {
     fn receive(
         &self,
     ) -> futures::future::LocalBoxFuture<'static, Result<NativeStreamItem, RuntimeFailure>> {
+        if self.blocked && self.events.borrow().is_empty() {
+            let (sender, receiver) = futures::channel::oneshot::channel();
+            self.pending.borrow_mut().replace(sender);
+            return Box::pin(async move {
+                receiver.await.unwrap_or(Err(RuntimeFailure::Unavailable {
+                    capability: CHANNEL_ID,
+                }))
+            });
+        }
         let result =
             self.events
                 .borrow_mut()
@@ -506,6 +519,11 @@ impl NativeStreamSession for NativeChannelStream {
     fn cancel(&self) {
         self.cancellations.fetch_add(1, Ordering::Relaxed);
         self.events.borrow_mut().clear();
+        if let Some(pending) = self.pending.borrow_mut().take() {
+            let _ = pending.send(Err(RuntimeFailure::Unavailable {
+                capability: CHANNEL_ID,
+            }));
+        }
     }
 }
 
@@ -536,20 +554,28 @@ impl NativeStreamEndpoint for NativeChannelStreamEndpoint {
         'static,
         Result<Result<Box<dyn NativeStreamSession>, Box<dyn Any>>, RuntimeFailure>,
     > {
-        let outcome = if operation != "chat" {
+        let outcome = if operation == "chat" {
+            request.downcast::<serde_json::Value>().map_or_else(
+                |_| {
+                    Err(RuntimeFailure::ProtocolViolation {
+                        capability: CHANNEL_ID,
+                    })
+                },
+                |request| {
+                    Ok(Ok(Box::new(NativeChannelStream {
+                        events: Rc::new(RefCell::new(VecDeque::new())),
+                        blocked: request.get("room").and_then(serde_json::Value::as_str)
+                            == Some("blocked"),
+                        pending: Rc::new(RefCell::new(None)),
+                        cancellations: self.cancellations.clone(),
+                    }) as Box<dyn NativeStreamSession>))
+                },
+            )
+        } else {
             Err(RuntimeFailure::UnknownOperation {
                 capability: CHANNEL_ID,
                 operation: operation.to_owned(),
             })
-        } else if request.downcast::<serde_json::Value>().is_err() {
-            Err(RuntimeFailure::ProtocolViolation {
-                capability: CHANNEL_ID,
-            })
-        } else {
-            Ok(Ok(Box::new(NativeChannelStream {
-                events: Rc::new(RefCell::new(VecDeque::new())),
-                cancellations: self.cancellations.clone(),
-            }) as Box<dyn NativeStreamSession>))
         };
         Box::pin(futures::future::ready(outcome))
     }
@@ -935,19 +961,20 @@ fn bun_authoring_v2_consumes_native_stream_and_event_dependencies() {
         result,
         json!({
             "publication": "accepted",
+            "concurrentPublication": "accepted",
             "message": { "kind": "message", "value": { "text": "from Bun" } },
             "halfClosed": { "kind": "peer_half_closed" },
             "terminal": { "kind": "terminal_success" }
         })
     );
     for _ in 0..20 {
-        if publications.load(Ordering::Relaxed) == 1 && cancellations.load(Ordering::Relaxed) == 1 {
+        if publications.load(Ordering::Relaxed) == 2 && cancellations.load(Ordering::Relaxed) == 2 {
             break;
         }
         thread::sleep(Duration::from_millis(5));
     }
-    assert_eq!(publications.load(Ordering::Relaxed), 1);
-    assert_eq!(cancellations.load(Ordering::Relaxed), 1);
+    assert_eq!(publications.load(Ordering::Relaxed), 2);
+    assert_eq!(cancellations.load(Ordering::Relaxed), 2);
     assert!(matches!(
         driver.run(app.shutdown(Duration::from_secs(1))),
         lenso_kernel::ShutdownOutcome::Clean

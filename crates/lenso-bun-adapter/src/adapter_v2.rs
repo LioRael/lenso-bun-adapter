@@ -15,6 +15,7 @@ use futures::{
     FutureExt as _, StreamExt as _,
     channel::{mpsc, oneshot},
     select,
+    stream::FuturesUnordered,
 };
 use lenso_app_plan::{CapabilityCardinality, PluginInstancePlan};
 use lenso_kernel::{
@@ -1229,21 +1230,37 @@ async fn dispatch_callbacks(
     cancellation: lenso_kernel::CancellationToken,
     exit: oneshot::Receiver<()>,
 ) {
+    let initialization = Rc::new(initialization);
+    let mut active = FuturesUnordered::new();
     let mut exit = exit.fuse();
     loop {
         let request = receiver.next().fuse();
+        let completed = if active.is_empty() {
+            futures::future::Either::Left(futures::future::pending())
+        } else {
+            futures::future::Either::Right(active.next().map(|_| ()))
+        }
+        .fuse();
         let cancelled = cancellation.cancelled().fuse();
-        futures::pin_mut!(request, cancelled);
+        futures::pin_mut!(request, completed, cancelled);
         select! {
             request = request => {
                 let Some(request) = request else { return };
-                dispatch_bridge(
-                    &imports,
-                    &contexts,
-                    &outbound_receive_sequences,
-                    &initialization,
-                    request,
-                ).await;
+                let imports = Rc::clone(&imports);
+                let contexts = Rc::clone(&contexts);
+                let outbound_receive_sequences = Rc::clone(&outbound_receive_sequences);
+                let initialization = Rc::clone(&initialization);
+                active.push(async move {
+                    dispatch_bridge(
+                        &imports,
+                        &contexts,
+                        &outbound_receive_sequences,
+                        &initialization,
+                        request,
+                    ).await;
+                });
+            },
+            () = completed => {
             },
             () = cancelled => {
                 return;

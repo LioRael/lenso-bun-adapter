@@ -37,14 +37,14 @@ const echoDescriptor: CapabilityProviderDescriptor = {
 };
 
 interface ChannelClient {
-  open(context: InvocationContext): Promise<ProviderStreamOpenOutcome>;
+  open(context: InvocationContext, room?: string): Promise<ProviderStreamOpenOutcome>;
   publish(context: InvocationContext): Promise<ProviderEventPublishOutcome>;
 }
 
 const channelContract: CapabilityDependencyBinding<ChannelClient, InteractionDependencyInvoker> = {
   descriptor: channelDescriptor,
   createClient: (invoke) => ({
-    open: (context) => invoke.openStream("chat", context, { room: "general" }),
+    open: (context, room = "general") => invoke.openStream("chat", context, { room }),
     publish: (context) => invoke.publishEvent("notify", context, { message: "ready" }),
   }),
 };
@@ -67,11 +67,24 @@ const definition = definePlugin({
       await opened.stream.closeSend();
       const halfClosed = await opened.stream.receive();
       const terminal = await opened.stream.receive();
+      const blocked = await instance.channel.open(context, "blocked");
+      if (blocked.kind !== "opened") return blocked;
+      const pendingReceive = blocked.stream.receive();
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      const concurrentPublication = await instance.channel.publish(context);
+      blocked.stream.cancel();
+      await pendingReceive.catch(() => undefined);
       const cancellable = await instance.channel.open(context);
       if (cancellable.kind === "opened") cancellable.stream.cancel();
       return {
         kind: "success",
-        value: { publication: publication.kind, message, halfClosed, terminal },
+        value: {
+          publication: publication.kind,
+          concurrentPublication: concurrentPublication.kind,
+          message,
+          halfClosed,
+          terminal,
+        },
       };
     },
   }))],
