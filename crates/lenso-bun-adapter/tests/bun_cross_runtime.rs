@@ -10,7 +10,7 @@ use std::{
 use futures::{StreamExt, stream::FuturesUnordered};
 use lenso_app_plan::{
     AppComposition, CapabilityBinding, CapabilityEndpointPlan, CapabilityRequirementPlan,
-    ExecutionClassId, PLUGIN_AUTHORING_V2_RUNTIME_PROFILE, PluginInstancePlan, RestartPolicy,
+    ExecutionClassId, PluginInstancePlan, RestartPolicy,
 };
 use lenso_kernel::{
     CancellationToken, DeterministicDriver, EventAdmission, EventCapability,
@@ -1008,7 +1008,7 @@ fn greeting_plan_with_concurrency(
 
 fn dependency_injection_plan() -> lenso_app_plan::ResolvedAppPlan {
     let provider = PluginInstancePlan::new("greeting-provider", "fixture.bun.greeting")
-        .with_authoring(2, PLUGIN_AUTHORING_V2_RUNTIME_PROFILE)
+        .with_authoring(2, lenso_bun_adapter::BUN_AUTHORING_RUNTIME_PROFILE)
         .with_entrypoint(fixture("sdk-request-provider.ts").to_string_lossy())
         .with_execution_class(ExecutionClassId::bun_child_process())
         .with_capability(CapabilityEndpointPlan::new(
@@ -1017,7 +1017,7 @@ fn dependency_injection_plan() -> lenso_app_plan::ResolvedAppPlan {
             ["greet"],
         ));
     let proxy = PluginInstancePlan::new("greeting-proxy", "fixture.bun.greeting-proxy")
-        .with_authoring(2, PLUGIN_AUTHORING_V2_RUNTIME_PROFILE)
+        .with_authoring(2, lenso_bun_adapter::BUN_AUTHORING_RUNTIME_PROFILE)
         .with_entrypoint(fixture("sdk-dependency-consumer-provider.ts").to_string_lossy())
         .with_configuration(r#"{"prefix":"Proxy: "}"#)
         .with_execution_class(ExecutionClassId::bun_child_process())
@@ -1031,7 +1031,7 @@ fn dependency_injection_plan() -> lenso_app_plan::ResolvedAppPlan {
             ["greet"],
         ));
     let caller = PluginInstancePlan::new("caller", "fixture.bun.caller")
-        .with_authoring(2, PLUGIN_AUTHORING_V2_RUNTIME_PROFILE)
+        .with_authoring(2, lenso_bun_adapter::BUN_AUTHORING_RUNTIME_PROFILE)
         .with_entrypoint(fixture("sdk-dependency-caller-provider.ts").to_string_lossy())
         .with_execution_class(ExecutionClassId::bun_child_process())
         .with_requirement(
@@ -1064,7 +1064,7 @@ fn dependency_injection_plan() -> lenso_app_plan::ResolvedAppPlan {
 fn named_dependency_injection_plan() -> lenso_app_plan::ResolvedAppPlan {
     let provider = |instance: &str, entrypoint: &str| {
         PluginInstancePlan::new(instance, format!("fixture.bun.{instance}"))
-            .with_authoring(2, PLUGIN_AUTHORING_V2_RUNTIME_PROFILE)
+            .with_authoring(2, lenso_bun_adapter::BUN_AUTHORING_RUNTIME_PROFILE)
             .with_entrypoint(fixture(entrypoint).to_string_lossy())
             .with_execution_class(ExecutionClassId::bun_child_process())
             .with_capability(CapabilityEndpointPlan::new(
@@ -1074,7 +1074,7 @@ fn named_dependency_injection_plan() -> lenso_app_plan::ResolvedAppPlan {
             ))
     };
     let proxy = PluginInstancePlan::new("greeting-proxy", "fixture.bun.dual-proxy")
-        .with_authoring(2, PLUGIN_AUTHORING_V2_RUNTIME_PROFILE)
+        .with_authoring(2, lenso_bun_adapter::BUN_AUTHORING_RUNTIME_PROFILE)
         .with_entrypoint(fixture("sdk-dual-dependency-consumer-provider.ts").to_string_lossy())
         .with_execution_class(ExecutionClassId::bun_child_process())
         .with_requirement(
@@ -1091,7 +1091,7 @@ fn named_dependency_injection_plan() -> lenso_app_plan::ResolvedAppPlan {
             ["greet"],
         ));
     let caller = PluginInstancePlan::new("caller", "fixture.bun.caller")
-        .with_authoring(2, PLUGIN_AUTHORING_V2_RUNTIME_PROFILE)
+        .with_authoring(2, lenso_bun_adapter::BUN_AUTHORING_RUNTIME_PROFILE)
         .with_entrypoint(fixture("sdk-dependency-caller-provider.ts").to_string_lossy())
         .with_execution_class(ExecutionClassId::bun_child_process())
         .with_requirement(
@@ -1137,7 +1137,7 @@ fn failed_construction_plan() -> lenso_app_plan::ResolvedAppPlan {
     AppComposition::new(
         vec![
             PluginInstancePlan::new("broken", "fixture.bun.broken")
-                .with_authoring(2, PLUGIN_AUTHORING_V2_RUNTIME_PROFILE)
+                .with_authoring(2, lenso_bun_adapter::BUN_AUTHORING_RUNTIME_PROFILE)
                 .with_entrypoint(fixture("sdk-create-failure.ts").to_string_lossy())
                 .with_execution_class(ExecutionClassId::bun_child_process()),
         ],
@@ -1151,7 +1151,7 @@ fn stop_hook_plan(marker: &Path) -> lenso_app_plan::ResolvedAppPlan {
     AppComposition::new(
         vec![
             PluginInstancePlan::new("lifecycle", "fixture.bun.lifecycle")
-                .with_authoring(2, PLUGIN_AUTHORING_V2_RUNTIME_PROFILE)
+                .with_authoring(2, lenso_bun_adapter::BUN_AUTHORING_RUNTIME_PROFILE)
                 .with_entrypoint(fixture("sdk-stop-hook.ts").to_string_lossy())
                 .with_execution_class(ExecutionClassId::bun_child_process())
                 .with_configuration(serde_json::json!({ "marker": marker }).to_string()),
@@ -1268,7 +1268,7 @@ fn process_dependency_injection_plan() -> lenso_app_plan::ResolvedAppPlan {
             ["greet"],
         ));
     let proxy = PluginInstancePlan::new("greeting-proxy", "fixture.bun.greeting-proxy")
-        .with_authoring(2, PLUGIN_AUTHORING_V2_RUNTIME_PROFILE)
+        .with_authoring(2, lenso_bun_adapter::BUN_AUTHORING_RUNTIME_PROFILE)
         .with_entrypoint(fixture("sdk-dependency-consumer-provider.ts").to_string_lossy())
         .with_configuration(r#"{"prefix":"Proxy: "}"#)
         .with_execution_class(ExecutionClassId::bun_child_process())
@@ -1282,7 +1282,7 @@ fn process_dependency_injection_plan() -> lenso_app_plan::ResolvedAppPlan {
             ["greet"],
         ));
     let caller = PluginInstancePlan::new("caller", "fixture.bun.caller")
-        .with_authoring(2, PLUGIN_AUTHORING_V2_RUNTIME_PROFILE)
+        .with_authoring(2, lenso_bun_adapter::BUN_AUTHORING_RUNTIME_PROFILE)
         .with_entrypoint(fixture("sdk-dependency-caller-provider.ts").to_string_lossy())
         .with_execution_class(ExecutionClassId::bun_child_process())
         .with_requirement(

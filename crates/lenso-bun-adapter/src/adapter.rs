@@ -9,10 +9,7 @@ use std::{
 };
 
 use futures::{FutureExt, channel::oneshot, future::LocalBoxFuture};
-use lenso_app_plan::{
-    EventAdmissionPlan, ExecutionClassId, PLUGIN_AUTHORING_V2_RUNTIME_PROFILE, PluginInstancePlan,
-    ResolvedAppPlan,
-};
+use lenso_app_plan::{EventAdmissionPlan, ExecutionClassId, PluginInstancePlan, ResolvedAppPlan};
 use lenso_kernel::{
     ActivateContext, DeactivateContext, ManagedResource, NativeEventEndpoint,
     NativeRequestEndpoint, NativeStreamEndpoint, NativeStreamItem, NativeStreamSession,
@@ -516,9 +513,7 @@ impl lenso_kernel::ExecutionAdapter for BunAdapter {
     fn supports_runtime_profile(&self, authoring_version: u32, profile: &str) -> bool {
         (authoring_version == 1
             && (profile == self.execution_class().as_str() || profile == "lenso.bun-authoring@1"))
-            || (authoring_version == 2
-                && (profile == PLUGIN_AUTHORING_V2_RUNTIME_PROFILE
-                    || profile == crate::BUN_AUTHORING_RUNTIME_PROFILE))
+            || (authoring_version == 2 && profile == crate::BUN_AUTHORING_RUNTIME_PROFILE)
     }
 
     fn execution_class(&self) -> ExecutionClassId {
@@ -1159,6 +1154,7 @@ impl ManagedResource for BunProcessResource {
 
 #[cfg(test)]
 mod tests {
+    use lenso_kernel::ExecutionAdapter as _;
     use lenso_runtime_codec::ArtifactHandle;
     use sha2::{Digest as _, Sha256};
 
@@ -1216,6 +1212,14 @@ mod tests {
         assert_eq!(BunAdapter::production("bun").wire(), BunWire::JsonRpcHttp);
         let adapter = BunAdapter::new("bun", BunWire::FramedStdio).with_codec(TestCodec);
         assert_eq!(adapter.wire(), BunWire::FramedStdio);
+    }
+
+    #[test]
+    fn authoring_v2_requires_the_bun_owned_runtime_profile() {
+        let adapter = BunAdapter::production("bun");
+
+        assert!(adapter.supports_runtime_profile(2, crate::BUN_AUTHORING_RUNTIME_PROFILE));
+        assert!(!adapter.supports_runtime_profile(2, "lenso.plugin-authoring@2"));
     }
 
     #[test]
