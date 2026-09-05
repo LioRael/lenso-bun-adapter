@@ -1,5 +1,7 @@
 use std::{
     any::Any,
+    cell::RefCell,
+    collections::VecDeque,
     fs,
     path::{Path, PathBuf},
     process::Command,
@@ -22,8 +24,10 @@ use lenso_bun_adapter::{
 };
 use lenso_kernel::{
     DeterministicDriver, EventAdmission, EventCapability, ExecutionAdapterCatalog,
-    InvocationContext, Kernel, NativeRequestEndpoint, PluginDependencyHandle, RequestCapability,
-    RuntimeFailure, StreamCapability, StreamEvent,
+    InvocationContext, Kernel, NativeEventEndpoint, NativeRequestEndpoint, NativeStreamEndpoint,
+    NativeStreamItem, NativeStreamSession, NoopPluginLifecycle, PluginDependencyHandle,
+    PluginEventDependencyHandle, PluginStreamDependencyHandle, RequestCapability, RuntimeFailure,
+    StreamCapability, StreamEvent,
 };
 use lenso_native_adapter::{
     NativePluginFactory, NativePluginFactoryContext, NativePluginInstance, NativePluginRegistry,
@@ -31,7 +35,7 @@ use lenso_native_adapter::{
 use lenso_process_protocol::authoring::*;
 use lenso_runtime_codec::{
     ArtifactCatalog, ArtifactHandle, JsonCapabilityCodec, JsonHostRequestFuture,
-    JsonInvocationOutcome,
+    JsonHostStreamOpenFuture, JsonInvocationOutcome, json_host_stream,
 };
 use serde_json::json;
 use sha2::{Digest as _, Sha256};
@@ -231,6 +235,64 @@ impl JsonCapabilityCodec for ChannelCodec {
     ) -> Result<Box<dyn Any>, RuntimeFailure> {
         Ok(Box::new(value))
     }
+
+    fn open_host_stream(
+        &self,
+        dependency: PluginStreamDependencyHandle,
+        operation: String,
+        request: serde_json::Value,
+        context: InvocationContext,
+    ) -> JsonHostStreamOpenFuture {
+        Box::pin(async move {
+            if operation != "chat" {
+                return Err(RuntimeFailure::UnknownOperation {
+                    capability: CHANNEL_ID,
+                    operation,
+                });
+            }
+            let handle = dependency.typed::<ChannelStream>()?;
+            match handle.open_with_context("chat", context, request).await? {
+                Ok(stream) => Ok(Ok(json_host_stream::<ChannelStream>(stream, Ok, Ok, Ok))),
+                Err(error) => Ok(Err(error)),
+            }
+        })
+    }
+
+    fn publish_host_event(
+        &self,
+        dependency: PluginEventDependencyHandle,
+        operation: String,
+        event: serde_json::Value,
+        context: InvocationContext,
+    ) -> futures::future::LocalBoxFuture<'static, Result<(), RuntimeFailure>> {
+        Box::pin(async move {
+            if operation != "notify" {
+                return Err(RuntimeFailure::UnknownOperation {
+                    capability: CHANNEL_ID,
+                    operation,
+                });
+            }
+            let results = dependency
+                .typed::<ChannelEvent>()?
+                .publish_with_context("notify", context, event)
+                .await;
+            let [result] = results.as_slice() else {
+                return Err(RuntimeFailure::ProtocolViolation {
+                    capability: CHANNEL_ID,
+                });
+            };
+            match result.admission() {
+                EventAdmission::Accepted => Ok(()),
+                EventAdmission::Unavailable => Err(RuntimeFailure::Unavailable {
+                    capability: CHANNEL_ID,
+                }),
+                EventAdmission::Exhausted => Err(RuntimeFailure::ResourceExhausted {
+                    capability: CHANNEL_ID,
+                    operation: "notify".to_owned(),
+                }),
+            }
+        })
+    }
 }
 
 #[derive(Debug)]
@@ -393,6 +455,198 @@ impl JsonCapabilityCodec for StoreCodec {
                 Err(error) => Ok(JsonInvocationOutcome::DomainError(error)),
             }
         })
+    }
+}
+
+type PendingReceive = futures::channel::oneshot::Sender<Result<NativeStreamItem, RuntimeFailure>>;
+
+#[derive(Debug)]
+struct NativeChannelStream {
+    events: Rc<RefCell<VecDeque<NativeStreamItem>>>,
+    blocked: bool,
+    pending: Rc<RefCell<Option<PendingReceive>>>,
+    cancellations: Arc<AtomicUsize>,
+}
+
+impl NativeStreamSession for NativeChannelStream {
+    fn send(
+        &self,
+        message: Box<dyn Any>,
+    ) -> futures::future::LocalBoxFuture<'static, Result<(), RuntimeFailure>> {
+        let result = message
+            .downcast::<serde_json::Value>()
+            .map(|message| {
+                self.events
+                    .borrow_mut()
+                    .push_back(NativeStreamItem::Message(message));
+            })
+            .map_err(|_| RuntimeFailure::ProtocolViolation {
+                capability: CHANNEL_ID,
+            });
+        Box::pin(futures::future::ready(result))
+    }
+
+    fn receive(
+        &self,
+    ) -> futures::future::LocalBoxFuture<'static, Result<NativeStreamItem, RuntimeFailure>> {
+        if self.blocked && self.events.borrow().is_empty() {
+            let (sender, receiver) = futures::channel::oneshot::channel();
+            self.pending.borrow_mut().replace(sender);
+            return Box::pin(async move {
+                receiver.await.unwrap_or(Err(RuntimeFailure::Unavailable {
+                    capability: CHANNEL_ID,
+                }))
+            });
+        }
+        let result =
+            self.events
+                .borrow_mut()
+                .pop_front()
+                .ok_or(RuntimeFailure::ProtocolViolation {
+                    capability: CHANNEL_ID,
+                });
+        Box::pin(futures::future::ready(result))
+    }
+
+    fn close_send(&self) -> futures::future::LocalBoxFuture<'static, Result<(), RuntimeFailure>> {
+        self.events.borrow_mut().extend([
+            NativeStreamItem::PeerHalfClosed,
+            NativeStreamItem::Terminal(Ok(())),
+        ]);
+        Box::pin(futures::future::ready(Ok(())))
+    }
+
+    fn cancel(&self) {
+        self.cancellations.fetch_add(1, Ordering::Relaxed);
+        self.events.borrow_mut().clear();
+        if let Some(pending) = self.pending.borrow_mut().take() {
+            let _ = pending.send(Err(RuntimeFailure::Unavailable {
+                capability: CHANNEL_ID,
+            }));
+        }
+    }
+}
+
+#[derive(Debug)]
+struct NativeChannelStreamEndpoint {
+    cancellations: Arc<AtomicUsize>,
+}
+
+impl NativeStreamEndpoint for NativeChannelStreamEndpoint {
+    fn capability_id(&self) -> &'static str {
+        CHANNEL_ID
+    }
+
+    fn descriptor_version(&self) -> &'static str {
+        VERSION
+    }
+
+    fn operations(&self) -> &'static [&'static str] {
+        &["chat"]
+    }
+
+    fn open(
+        &self,
+        operation: &str,
+        request: Box<dyn Any>,
+        _context: InvocationContext,
+    ) -> futures::future::LocalBoxFuture<
+        'static,
+        Result<Result<Box<dyn NativeStreamSession>, Box<dyn Any>>, RuntimeFailure>,
+    > {
+        let outcome = if operation == "chat" {
+            request.downcast::<serde_json::Value>().map_or_else(
+                |_| {
+                    Err(RuntimeFailure::ProtocolViolation {
+                        capability: CHANNEL_ID,
+                    })
+                },
+                |request| {
+                    Ok(Ok(Box::new(NativeChannelStream {
+                        events: Rc::new(RefCell::new(VecDeque::new())),
+                        blocked: request.get("room").and_then(serde_json::Value::as_str)
+                            == Some("blocked"),
+                        pending: Rc::new(RefCell::new(None)),
+                        cancellations: self.cancellations.clone(),
+                    }) as Box<dyn NativeStreamSession>))
+                },
+            )
+        } else {
+            Err(RuntimeFailure::UnknownOperation {
+                capability: CHANNEL_ID,
+                operation: operation.to_owned(),
+            })
+        };
+        Box::pin(futures::future::ready(outcome))
+    }
+}
+
+#[derive(Debug)]
+struct NativeChannelEventEndpoint {
+    publications: Arc<AtomicUsize>,
+}
+
+impl NativeEventEndpoint for NativeChannelEventEndpoint {
+    fn capability_id(&self) -> &'static str {
+        CHANNEL_ID
+    }
+
+    fn descriptor_version(&self) -> &'static str {
+        VERSION
+    }
+
+    fn operations(&self) -> &'static [&'static str] {
+        &["notify"]
+    }
+
+    fn publish(
+        &self,
+        operation: &str,
+        event: Box<dyn Any>,
+        _context: InvocationContext,
+    ) -> futures::future::LocalBoxFuture<'static, Result<(), RuntimeFailure>> {
+        let result = if operation != "notify" {
+            Err(RuntimeFailure::UnknownOperation {
+                capability: CHANNEL_ID,
+                operation: operation.to_owned(),
+            })
+        } else if event.downcast::<serde_json::Value>().is_err() {
+            Err(RuntimeFailure::ProtocolViolation {
+                capability: CHANNEL_ID,
+            })
+        } else {
+            self.publications.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        };
+        Box::pin(futures::future::ready(result))
+    }
+}
+
+#[derive(Debug)]
+struct NativeChannelFactory {
+    publications: Arc<AtomicUsize>,
+    cancellations: Arc<AtomicUsize>,
+}
+
+impl NativePluginFactory for NativeChannelFactory {
+    fn package_id(&self) -> &'static str {
+        "test.native-channel"
+    }
+
+    fn instantiate(
+        &self,
+        _context: NativePluginFactoryContext<'_>,
+    ) -> Result<NativePluginInstance, RuntimeFailure> {
+        Ok(NativePluginInstance::with_all_endpoints(
+            Vec::new(),
+            vec![Rc::new(NativeChannelStreamEndpoint {
+                cancellations: self.cancellations.clone(),
+            })],
+            vec![Rc::new(NativeChannelEventEndpoint {
+                publications: self.publications.clone(),
+            })],
+            NoopPluginLifecycle,
+        ))
     }
 }
 
@@ -611,6 +865,116 @@ fn execution_adapter_exposes_authoring_v2_stream_and_event_handles() {
         driver.run(stream.receive()),
         Ok(StreamEvent::Terminal(Ok(())))
     ));
+    assert!(matches!(
+        driver.run(app.shutdown(Duration::from_secs(1))),
+        lenso_kernel::ShutdownOutcome::Clean
+    ));
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn bun_authoring_v2_consumes_native_stream_and_event_dependencies() {
+    let source = fixture("v2-outbound-interactions-child.ts");
+    let bundle = tempfile::tempdir().unwrap();
+    let entrypoint = bundle.path().join("plugin.js");
+    assert!(
+        Command::new(bun_binary())
+            .arg("build")
+            .arg("--target")
+            .arg("bun")
+            .arg("--outfile")
+            .arg(&entrypoint)
+            .arg(source)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let bytes = fs::read(&entrypoint).unwrap();
+    let digest = format!("sha256:{}", hex::encode(Sha256::digest(&bytes)));
+    let artifacts = ArtifactCatalog::new()
+        .with_artifact(
+            "bun-outbound",
+            ArtifactHandle::open(&entrypoint, &digest, bytes.len() as u64).unwrap(),
+        )
+        .unwrap();
+    let publications = Arc::new(AtomicUsize::new(0));
+    let cancellations = Arc::new(AtomicUsize::new(0));
+    let adapters = ExecutionAdapterCatalog::new()
+        .with_adapter(
+            NativePluginRegistry::new()
+                .with_factory(NativeChannelFactory {
+                    publications: publications.clone(),
+                    cancellations: cancellations.clone(),
+                })
+                .with_factory(EmptyConsumerFactory),
+        )
+        .unwrap()
+        .with_adapter(
+            BunAdapter::production(bun_binary())
+                .with_artifacts(artifacts)
+                .with_authoring_codec(ChannelCodec)
+                .with_authoring_codec(EchoCodec),
+        )
+        .unwrap();
+    let channel_endpoint = CapabilityEndpointPlan::new(CHANNEL_ID, VERSION, ["chat", "notify"])
+        .with_stream_operation("chat")
+        .with_event_operation("notify")
+        .with_event_capacity(4)
+        .with_limits(0, 4);
+    let plan = AppComposition::new(
+        vec![
+            PluginInstancePlan::new("channel", "test.native-channel")
+                .with_capability(channel_endpoint),
+            PluginInstancePlan::new("bun-outbound", "test.bun-outbound")
+                .with_authoring(2, BUN_AUTHORING_RUNTIME_PROFILE)
+                .with_entrypoint("plugin")
+                .with_execution_class(ExecutionClassId::bun_child_process())
+                .with_requirement(
+                    CapabilityRequirementPlan::one(CHANNEL_ID, VERSION)
+                        .with_requirement_id("channel"),
+                )
+                .with_capability(CapabilityEndpointPlan::new(ECHO_ID, VERSION, ["echo"])),
+            PluginInstancePlan::new("consumer", "test.echo-consumer")
+                .with_requirement(CapabilityRequirementPlan::one(ECHO_ID, VERSION)),
+        ],
+        vec![
+            CapabilityBinding::new("bun-outbound", CHANNEL_ID, VERSION, "channel")
+                .with_requirement_id("channel"),
+            CapabilityBinding::new("consumer", ECHO_ID, VERSION, "bun-outbound"),
+        ],
+    )
+    .resolve()
+    .unwrap();
+    let driver = DeterministicDriver::new();
+    let app = driver
+        .run(Kernel::start(plan, driver.clone(), adapters))
+        .unwrap();
+    let result = driver
+        .run(
+            app.handle::<Echo>("consumer")
+                .unwrap()
+                .invoke("echo", json!({})),
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        result,
+        json!({
+            "publication": "accepted",
+            "concurrentPublication": "accepted",
+            "message": { "kind": "message", "value": { "text": "from Bun" } },
+            "halfClosed": { "kind": "peer_half_closed" },
+            "terminal": { "kind": "terminal_success" }
+        })
+    );
+    for _ in 0..20 {
+        if publications.load(Ordering::Relaxed) == 2 && cancellations.load(Ordering::Relaxed) == 2 {
+            break;
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(publications.load(Ordering::Relaxed), 2);
+    assert_eq!(cancellations.load(Ordering::Relaxed), 2);
     assert!(matches!(
         driver.run(app.shutdown(Duration::from_secs(1))),
         lenso_kernel::ShutdownOutcome::Clean

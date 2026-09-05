@@ -15,6 +15,7 @@ use futures::{
     FutureExt as _, StreamExt as _,
     channel::{mpsc, oneshot},
     select,
+    stream::FuturesUnordered,
 };
 use lenso_app_plan::{CapabilityCardinality, PluginInstancePlan};
 use lenso_kernel::{
@@ -25,12 +26,15 @@ use lenso_process_protocol::{
     VALUE_PROFILE,
     authoring::{
         AuthoringLimits, CancelParams, ConstructParams, EventPublishOutcome, EventPublishParams,
-        FactoryOutcome, InitializeParams, InvocationOutcome, InvocationResult, InvocationScope,
-        OutboundCallParams, OutboundCallResult, ProvidedEndpoint, RequirementCardinality,
-        RequirementDeclaration, RouteDescriptor, RuntimeFailure as WireFailure, SessionIdentity,
-        Settlement, SettlementState, StopHookOutcome, StopParams, StreamActionOutcome,
-        StreamCancelParams, StreamCloseSendParams, StreamOpenOutcome, StreamOpenParams,
-        StreamReceiveOutcome, StreamReceiveParams, StreamSendParams, StreamTerminalOutcome,
+        EventPublishResult, FactoryOutcome, InitializeParams, InvocationOutcome, InvocationResult,
+        InvocationScope, OutboundCallParams, OutboundCallResult, OutboundEventPublishParams,
+        OutboundEventPublishResult, OutboundStreamOpenParams, OutboundStreamOpenResult,
+        ProvidedEndpoint, RequirementCardinality, RequirementDeclaration, RouteDescriptor,
+        RuntimeFailure as WireFailure, SessionIdentity, Settlement, SettlementState,
+        StopHookOutcome, StopParams, StreamActionOutcome, StreamActionResult, StreamCancelParams,
+        StreamCloseSendParams, StreamOpenOutcome, StreamOpenParams, StreamOpenResult,
+        StreamReceiveOutcome, StreamReceiveParams, StreamReceiveResult, StreamSendParams,
+        StreamTerminalOutcome,
     },
 };
 use lenso_runtime_codec::{
@@ -64,7 +68,10 @@ pub(super) fn prepare_instance(
     for codec in provided.iter().chain(&required) {
         validate_digest(codec.descriptor_digest(), codec.capability_id())?;
     }
-    let imports = Rc::new(JsonHostImports::new(required.clone(), 0)?);
+    let imports = Rc::new(JsonHostImports::new(
+        required.clone(),
+        config.request_queue_capacity,
+    )?);
     let generation = BunGenerationV2::new(
         artifacts.require(instance.instance_key())?.clone(),
         instance.clone(),
@@ -97,6 +104,7 @@ struct BunGenerationV2 {
     host: RefCell<Option<Arc<BunAuthoringHost>>>,
     callback_sender: RefCell<Option<CallbackSender>>,
     contexts: Rc<RefCell<BTreeMap<String, InvocationContext>>>,
+    outbound_receive_sequences: Rc<RefCell<BTreeMap<u64, u64>>>,
     shared_scopes: SharedScopes,
     settlements: SettlementSenders,
     stop_started: AtomicBool,
@@ -171,6 +179,7 @@ impl BunGenerationV2 {
             host: RefCell::new(None),
             callback_sender: RefCell::new(None),
             contexts: Rc::new(RefCell::new(BTreeMap::new())),
+            outbound_receive_sequences: Rc::new(RefCell::new(BTreeMap::new())),
             shared_scopes: SharedScopes::default(),
             settlements: SettlementSenders::default(),
             stop_started: AtomicBool::new(false),
@@ -283,6 +292,7 @@ impl BunGenerationV2 {
         self.settlements.lock().expect("Bun settlements").clear();
         self.shared_scopes.lock().expect("Bun scopes").clear();
         self.contexts.borrow_mut().clear();
+        self.outbound_receive_sequences.borrow_mut().clear();
         self.imports.deactivate();
     }
 }
@@ -891,6 +901,7 @@ impl PluginLifecycle for BunLifecycleV2 {
             generation.retire_lifecycle(&scope.scope_id);
             let imports = generation.imports.clone();
             let contexts = generation.contexts.clone();
+            let outbound_receive_sequences = generation.outbound_receive_sequences.clone();
             let initialization_for_bridge = generation
                 .initialization
                 .borrow()
@@ -903,6 +914,7 @@ impl PluginLifecycle for BunLifecycleV2 {
                     callback_receiver,
                     imports,
                     contexts,
+                    outbound_receive_sequences,
                     initialization_for_bridge,
                     callback_cancellation,
                     exit,
@@ -995,17 +1007,40 @@ impl ManagedResource for BunV2Resource {
     }
 }
 
-struct BridgeRequest {
-    call: OutboundCallParams,
-    response: std_mpsc::SyncSender<Result<OutboundCallResult, RuntimeFailure>>,
+enum BridgeRequest {
+    Call(
+        OutboundCallParams,
+        std_mpsc::SyncSender<Result<OutboundCallResult, RuntimeFailure>>,
+    ),
+    Event(
+        OutboundEventPublishParams,
+        std_mpsc::SyncSender<Result<OutboundEventPublishResult, RuntimeFailure>>,
+    ),
+    StreamOpen(
+        OutboundStreamOpenParams,
+        std_mpsc::SyncSender<Result<OutboundStreamOpenResult, RuntimeFailure>>,
+    ),
+    StreamSend(
+        StreamSendParams,
+        std_mpsc::SyncSender<Result<StreamActionResult, RuntimeFailure>>,
+    ),
+    StreamReceive(
+        StreamReceiveParams,
+        std_mpsc::SyncSender<Result<StreamReceiveResult, RuntimeFailure>>,
+    ),
+    StreamClose(
+        StreamCloseSendParams,
+        std_mpsc::SyncSender<Result<StreamActionResult, RuntimeFailure>>,
+    ),
+    StreamCancel(
+        StreamCancelParams,
+        std_mpsc::SyncSender<Result<StreamActionResult, RuntimeFailure>>,
+    ),
 }
 
 impl std::fmt::Debug for BridgeRequest {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("BridgeRequest")
-            .field("correlation_id", &self.call.correlation_id)
-            .finish_non_exhaustive()
+        formatter.write_str("BridgeRequest(..)")
     }
 }
 
@@ -1038,15 +1073,99 @@ impl BunAuthoringCallback for HostCallback {
         self.sender
             .lock()
             .expect("Bun callback sender")
-            .try_send(BridgeRequest {
-                call: params,
-                response,
-            })
+            .try_send(BridgeRequest::Call(params, response))
             .map_err(|_| RuntimeFailure::ResourceExhausted {
                 capability: EXECUTION_CLASS,
                 operation: "lenso.call".to_owned(),
             })?;
         result.recv().map_err(|_| unavailable())?
+    }
+
+    fn publish_event(
+        &self,
+        params: OutboundEventPublishParams,
+    ) -> Result<OutboundEventPublishResult, RuntimeFailure> {
+        self.validate_parent(&params.scope, |parent| {
+            params.validate_against(&self.initialization, parent, true)
+        })?;
+        send_bridge(
+            &self.sender,
+            "lenso.event.publish",
+            BridgeRequest::Event,
+            params,
+        )
+    }
+
+    fn open_stream(
+        &self,
+        params: OutboundStreamOpenParams,
+    ) -> Result<OutboundStreamOpenResult, RuntimeFailure> {
+        self.validate_parent(&params.scope, |parent| {
+            params.validate_against(&self.initialization, parent, true)
+        })?;
+        send_bridge(
+            &self.sender,
+            "lenso.stream.open",
+            BridgeRequest::StreamOpen,
+            params,
+        )
+    }
+
+    fn send_stream(&self, params: StreamSendParams) -> Result<StreamActionResult, RuntimeFailure> {
+        params
+            .validate_for(&self.initialization.identity)
+            .map_err(|error| protocol(error.to_string()))?;
+        send_bridge(
+            &self.sender,
+            "lenso.stream.send",
+            BridgeRequest::StreamSend,
+            params,
+        )
+    }
+
+    fn receive_stream(
+        &self,
+        params: StreamReceiveParams,
+    ) -> Result<StreamReceiveResult, RuntimeFailure> {
+        params
+            .validate_for(&self.initialization.identity)
+            .map_err(|error| protocol(error.to_string()))?;
+        send_bridge(
+            &self.sender,
+            "lenso.stream.receive",
+            BridgeRequest::StreamReceive,
+            params,
+        )
+    }
+
+    fn close_stream_send(
+        &self,
+        params: StreamCloseSendParams,
+    ) -> Result<StreamActionResult, RuntimeFailure> {
+        params
+            .validate_for(&self.initialization.identity)
+            .map_err(|error| protocol(error.to_string()))?;
+        send_bridge(
+            &self.sender,
+            "lenso.stream.close_send",
+            BridgeRequest::StreamClose,
+            params,
+        )
+    }
+
+    fn cancel_stream(
+        &self,
+        params: StreamCancelParams,
+    ) -> Result<StreamActionResult, RuntimeFailure> {
+        params
+            .validate_for(&self.initialization.identity)
+            .map_err(|error| protocol(error.to_string()))?;
+        send_bridge(
+            &self.sender,
+            "lenso.stream.cancel",
+            BridgeRequest::StreamCancel,
+            params,
+        )
     }
 
     fn settled(&self, settlement: Settlement) -> Result<(), RuntimeFailure> {
@@ -1063,24 +1182,85 @@ impl BunAuthoringCallback for HostCallback {
     }
 }
 
+impl HostCallback {
+    fn validate_parent(
+        &self,
+        scope: &InvocationScope,
+        validate: impl FnOnce(&InvocationScope) -> Result<(), lenso_process_protocol::ProtocolError>,
+    ) -> Result<(), RuntimeFailure> {
+        let parent_scope_id = scope
+            .parent_scope_id
+            .as_deref()
+            .ok_or_else(|| protocol("Bun outbound interaction has no parent scope"))?;
+        let parent = self
+            .scopes
+            .lock()
+            .expect("Bun scopes")
+            .get(parent_scope_id)
+            .cloned()
+            .ok_or_else(|| protocol("Bun outbound interaction parent is not active"))?;
+        validate(&parent).map_err(|error| protocol(error.to_string()))
+    }
+}
+
+fn send_bridge<P, R>(
+    sender: &CallbackSender,
+    operation: &str,
+    build: impl FnOnce(P, std_mpsc::SyncSender<Result<R, RuntimeFailure>>) -> BridgeRequest,
+    params: P,
+) -> Result<R, RuntimeFailure> {
+    let (response, result) = std_mpsc::sync_channel(1);
+    sender
+        .lock()
+        .expect("Bun callback sender")
+        .try_send(build(params, response))
+        .map_err(|_| RuntimeFailure::ResourceExhausted {
+            capability: EXECUTION_CLASS,
+            operation: operation.to_owned(),
+        })?;
+    result.recv().map_err(|_| unavailable())?
+}
+
 async fn dispatch_callbacks(
     mut receiver: mpsc::Receiver<BridgeRequest>,
     imports: Rc<JsonHostImports>,
     contexts: Rc<RefCell<BTreeMap<String, InvocationContext>>>,
+    outbound_receive_sequences: Rc<RefCell<BTreeMap<u64, u64>>>,
     initialization: InitializeParams,
     cancellation: lenso_kernel::CancellationToken,
     exit: oneshot::Receiver<()>,
 ) {
+    let initialization = Rc::new(initialization);
+    let mut active = FuturesUnordered::new();
     let mut exit = exit.fuse();
     loop {
         let request = receiver.next().fuse();
+        let completed = if active.is_empty() {
+            futures::future::Either::Left(futures::future::pending())
+        } else {
+            futures::future::Either::Right(active.next().map(|_| ()))
+        }
+        .fuse();
         let cancelled = cancellation.cancelled().fuse();
-        futures::pin_mut!(request, cancelled);
+        futures::pin_mut!(request, completed, cancelled);
         select! {
             request = request => {
                 let Some(request) = request else { return };
-                let result = dispatch_callback(&imports, &contexts, &initialization, &request.call).await;
-                let _ = request.response.send(result);
+                let imports = Rc::clone(&imports);
+                let contexts = Rc::clone(&contexts);
+                let outbound_receive_sequences = Rc::clone(&outbound_receive_sequences);
+                let initialization = Rc::clone(&initialization);
+                active.push(async move {
+                    dispatch_bridge(
+                        &imports,
+                        &contexts,
+                        &outbound_receive_sequences,
+                        &initialization,
+                        request,
+                    ).await;
+                });
+            },
+            () = completed => {
             },
             () = cancelled => {
                 return;
@@ -1112,7 +1292,7 @@ async fn dispatch_callback(
         .get(parent_scope)
         .cloned()
         .ok_or_else(|| protocol("Bun outbound call parent context is not active"))?;
-    let binding_id = route_binding_id(initialization, call)?;
+    let binding_id = route_binding_id(initialization, &call.requirement_id, &call.route_id)?;
     let result = imports
         .invoke(
             binding_id,
@@ -1126,6 +1306,215 @@ async fn dispatch_callback(
         correlation_id: call.correlation_id.clone(),
         outcome: wire_outcome(result),
     })
+}
+
+#[allow(clippy::too_many_lines)]
+async fn dispatch_bridge(
+    imports: &Rc<JsonHostImports>,
+    contexts: &Rc<RefCell<BTreeMap<String, InvocationContext>>>,
+    outbound_receive_sequences: &Rc<RefCell<BTreeMap<u64, u64>>>,
+    initialization: &InitializeParams,
+    request: BridgeRequest,
+) {
+    match request {
+        BridgeRequest::Call(params, response) => {
+            let _ =
+                response.send(dispatch_callback(imports, contexts, initialization, &params).await);
+        }
+        BridgeRequest::Event(params, response) => {
+            let result = async {
+                let context = parent_context(contexts, &params.scope)?;
+                let binding =
+                    route_binding_id(initialization, &params.requirement_id, &params.route_id)?;
+                let outcome = match imports
+                    .publish_event(
+                        binding,
+                        params.operation.clone(),
+                        params.event.clone(),
+                        context,
+                    )
+                    .await
+                {
+                    Ok(()) => EventPublishOutcome::Accepted,
+                    Err(failure) => EventPublishOutcome::Runtime {
+                        failure: wire_failure(failure),
+                    },
+                };
+                Ok(EventPublishResult {
+                    session: params.session,
+                    correlation_id: params.correlation_id,
+                    outcome,
+                })
+            }
+            .await;
+            let _ = response.send(result);
+        }
+        BridgeRequest::StreamOpen(params, response) => {
+            let result = async {
+                let context = parent_context(contexts, &params.scope)?;
+                let binding =
+                    route_binding_id(initialization, &params.requirement_id, &params.route_id)?;
+                let outcome = match Rc::clone(imports)
+                    .open_stream(
+                        binding,
+                        params.operation.clone(),
+                        params.request.clone(),
+                        context,
+                    )
+                    .await
+                {
+                    Ok(Ok(stream_id)) => {
+                        outbound_receive_sequences.borrow_mut().insert(stream_id, 0);
+                        StreamOpenOutcome::Opened {
+                            stream_id: stream_id.to_string(),
+                        }
+                    }
+                    Ok(Err(error)) => StreamOpenOutcome::Domain { error },
+                    Err(failure) => StreamOpenOutcome::Runtime {
+                        failure: wire_failure(failure),
+                    },
+                };
+                Ok(StreamOpenResult {
+                    session: params.session,
+                    correlation_id: params.correlation_id,
+                    outcome,
+                })
+            }
+            .await;
+            let _ = response.send(result);
+        }
+        BridgeRequest::StreamSend(params, response) => {
+            let stream_id = params
+                .stream_id
+                .parse::<u64>()
+                .map_err(|_| protocol("invalid outbound Stream id"));
+            let result = match stream_id {
+                Ok(stream_id) => imports.send_stream(stream_id, params.message.clone()).await,
+                Err(error) => Err(error),
+            };
+            let outcome = result.map_or_else(
+                |failure| StreamActionOutcome::Runtime {
+                    failure: wire_failure(failure),
+                },
+                |()| StreamActionOutcome::Accepted,
+            );
+            let _ = response.send(Ok(StreamActionResult {
+                session: params.session,
+                correlation_id: params.correlation_id,
+                stream_id: params.stream_id,
+                outcome,
+            }));
+        }
+        BridgeRequest::StreamReceive(params, response) => {
+            let result = async {
+                let stream_id = params
+                    .stream_id
+                    .parse::<u64>()
+                    .map_err(|_| protocol("invalid outbound Stream id"))?;
+                let outcome = match Rc::clone(imports).receive_stream(stream_id).await {
+                    Ok(JsonStreamItem::Message(message)) => {
+                        let sequence = {
+                            let mut sequences = outbound_receive_sequences.borrow_mut();
+                            let sequence = sequences.entry(stream_id).or_default();
+                            let current = *sequence;
+                            *sequence = sequence.saturating_add(1);
+                            current
+                        };
+                        StreamReceiveOutcome::Message {
+                            sequence: sequence.to_string(),
+                            message,
+                        }
+                    }
+                    Ok(JsonStreamItem::PeerHalfClosed) => StreamReceiveOutcome::PeerHalfClosed,
+                    Ok(JsonStreamItem::Terminal(Ok(()))) => {
+                        outbound_receive_sequences.borrow_mut().remove(&stream_id);
+                        StreamReceiveOutcome::Terminal {
+                            outcome: StreamTerminalOutcome::Success,
+                        }
+                    }
+                    Ok(JsonStreamItem::Terminal(Err(error))) => {
+                        outbound_receive_sequences.borrow_mut().remove(&stream_id);
+                        StreamReceiveOutcome::Terminal {
+                            outcome: StreamTerminalOutcome::Domain { error },
+                        }
+                    }
+                    Err(failure) => {
+                        outbound_receive_sequences.borrow_mut().remove(&stream_id);
+                        StreamReceiveOutcome::Runtime {
+                            failure: wire_failure(failure),
+                        }
+                    }
+                };
+                Ok(StreamReceiveResult {
+                    session: params.session,
+                    correlation_id: params.correlation_id,
+                    stream_id: params.stream_id,
+                    outcome,
+                })
+            }
+            .await;
+            let _ = response.send(result);
+        }
+        BridgeRequest::StreamClose(params, response) => {
+            let stream_id = params
+                .stream_id
+                .parse::<u64>()
+                .map_err(|_| protocol("invalid outbound Stream id"));
+            let result = match stream_id {
+                Ok(id) => imports.close_stream_send(id).await,
+                Err(error) => Err(error),
+            };
+            let outcome = result.map_or_else(
+                |failure| StreamActionOutcome::Runtime {
+                    failure: wire_failure(failure),
+                },
+                |()| StreamActionOutcome::Accepted,
+            );
+            let _ = response.send(Ok(StreamActionResult {
+                session: params.session,
+                correlation_id: params.correlation_id,
+                stream_id: params.stream_id,
+                outcome,
+            }));
+        }
+        BridgeRequest::StreamCancel(params, response) => {
+            let parsed_stream_id = params
+                .stream_id
+                .parse::<u64>()
+                .map_err(|_| protocol("invalid outbound Stream id"));
+            if let Ok(stream_id) = &parsed_stream_id {
+                outbound_receive_sequences.borrow_mut().remove(stream_id);
+            }
+            let result = parsed_stream_id.and_then(|id| imports.cancel_stream(id));
+            let outcome = result.map_or_else(
+                |failure| StreamActionOutcome::Runtime {
+                    failure: wire_failure(failure),
+                },
+                |()| StreamActionOutcome::Accepted,
+            );
+            let _ = response.send(Ok(StreamActionResult {
+                session: params.session,
+                correlation_id: params.correlation_id,
+                stream_id: params.stream_id,
+                outcome,
+            }));
+        }
+    }
+}
+
+fn parent_context(
+    contexts: &Rc<RefCell<BTreeMap<String, InvocationContext>>>,
+    scope: &InvocationScope,
+) -> Result<InvocationContext, RuntimeFailure> {
+    let parent = scope
+        .parent_scope_id
+        .as_deref()
+        .ok_or_else(|| protocol("Bun outbound interaction has no parent scope"))?;
+    contexts
+        .borrow()
+        .get(parent)
+        .cloned()
+        .ok_or_else(|| protocol("Bun outbound interaction parent context is not active"))
 }
 
 async fn await_lifecycle_rpc<T>(
@@ -1151,13 +1540,13 @@ async fn await_lifecycle_rpc<T>(
                     .borrow()
                     .clone()
                     .ok_or(RuntimeFailure::AdmissionClosed)?;
-                let result = dispatch_callback(
+                dispatch_bridge(
                     &generation.imports,
                     &generation.contexts,
+                    &generation.outbound_receive_sequences,
                     &initialization,
-                    &callback.call,
+                    callback,
                 ).await;
-                let _ = callback.response.send(result);
             },
             () = cancelled => {
                 generation.terminate();
@@ -1278,12 +1667,13 @@ fn random_session() -> Result<String, RuntimeFailure> {
 
 fn route_binding_id(
     initialization: &InitializeParams,
-    call: &OutboundCallParams,
+    requirement_id: &str,
+    route_id: &str,
 ) -> Result<u32, RuntimeFailure> {
     initialization
         .routes
         .iter()
-        .find(|route| route.route_id == call.route_id)
+        .find(|route| route.route_id == route_id && route.requirement_id == requirement_id)
         .ok_or_else(|| protocol("Bun outbound call references an unknown route"))?
         .route_id
         .strip_prefix("route-")

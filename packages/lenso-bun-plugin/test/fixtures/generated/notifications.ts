@@ -19,7 +19,7 @@ export type UnknownDomainError = lensoContractRuntime.UnknownDomainError;
 export type StreamEvent<Message, DomainError> = lensoContractRuntime.StreamEvent<Message, DomainError>;
 export type StreamSession<Message, DomainError> = lensoContractRuntime.StreamSession<Message, DomainError>;
 
-export interface CapabilityContractReference<Client, Provider extends object> {
+export interface CapabilityContractReference<Client, Provider extends object, Runtime extends DependencyInvoker = DependencyInvoker> extends CapabilityDependencyBinding<Client, Runtime> {
   readonly kind: "lenso.capability";
   readonly capability_id: string;
   readonly descriptor_version: string;
@@ -27,6 +27,9 @@ export interface CapabilityContractReference<Client, Provider extends object> {
   readonly generated_client: string;
   readonly descriptor: CapabilityProviderDescriptor;
   bindProvider(provider: Provider): CapabilityProviderBinding;
+  required(id?: string): CapabilityDependencyDeclaration<Client, "one", Runtime>;
+  optional(id?: string): CapabilityDependencyDeclaration<Client, "optional", Runtime>;
+  many(id?: string): CapabilityDependencyDeclaration<Client, "many", Runtime>;
   readonly __client?: Client;
   readonly __provider?: Provider;
 }
@@ -64,7 +67,7 @@ export interface NotificationsProvider {
   notify(context: InvocationContext, event: NotifyRequest): void | Promise<void>;
 }
 
-export const Notifications: CapabilityContractReference<NotificationsClient, NotificationsProvider> = { kind: "lenso.capability", capability_id: CAPABILITY_ID, descriptor_version: DESCRIPTOR_VERSION, descriptor_digest: DESCRIPTOR_DIGEST, generated_client: "NotificationsClient", descriptor: { capability_id: CAPABILITY_ID, descriptor_version: DESCRIPTOR_VERSION, operations: ["notify"], stream_operations: [], event_operations: ["notify"] }, bindProvider: bindNotificationsProvider, };
+export const Notifications: CapabilityContractReference<NotificationsClient, NotificationsProvider, InteractionDependencyInvoker> = { kind: "lenso.capability", ...bindNotificationsDependency(), capability_id: CAPABILITY_ID, descriptor_version: DESCRIPTOR_VERSION, descriptor_digest: DESCRIPTOR_DIGEST, generated_client: "NotificationsClient", descriptor: { capability_id: CAPABILITY_ID, descriptor_version: DESCRIPTOR_VERSION, operations: ["notify"], stream_operations: [], event_operations: ["notify"] }, bindProvider: bindNotificationsProvider, required(id) { return { kind: "lenso.dependency", ...(id === undefined ? {} : { id }), contract: this, cardinality: "one" }; }, optional(id) { return { kind: "lenso.dependency", ...(id === undefined ? {} : { id }), contract: this, cardinality: "optional" }; }, many(id) { return { kind: "lenso.dependency", ...(id === undefined ? {} : { id }), contract: this, cardinality: "many" }; }, };
 export const NOTIFICATIONS_CONTRACT = Notifications;
 
 export type ProviderDispatchOutcome =
@@ -177,5 +180,75 @@ export function bindNotificationsProvider(
 
 export type Provider = NotificationsProvider;
 export const bindProvider = bindNotificationsProvider;
+
+export type DependencyInvoker = (
+  operation: string,
+  context: InvocationContext,
+  payload: unknown,
+) => Promise<ProviderDispatchOutcome>;
+
+export type InteractionDependencyInvoker = DependencyInvoker & {
+  readonly providerInstance: string;
+  openStream(operation: string, context: InvocationContext, payload: unknown): Promise<ProviderStreamOpenOutcome>;
+  publishEvent(operation: string, context: InvocationContext, payload: unknown): Promise<ProviderEventPublishOutcome>;
+};
+
+export interface CapabilityDependencyBinding<Client, Runtime extends DependencyInvoker = DependencyInvoker> {
+  readonly descriptor: CapabilityProviderDescriptor;
+  createClient(invoke: Runtime): Client;
+}
+
+export interface CapabilityDependencyDeclaration<Client, Cardinality extends "one" | "optional" | "many", Runtime extends DependencyInvoker = DependencyInvoker> {
+  readonly kind: "lenso.dependency";
+  readonly id?: string;
+  readonly contract: CapabilityDependencyBinding<Client, Runtime>;
+  readonly cardinality: Cardinality;
+}
+
+function dependencyErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function dependencyRuntimeError(failure: RuntimeFailure): Error {
+  return Object.assign(new Error(`Capability dependency failed: ${failure.kind}`), { failure });
+}
+
+function dependencyFailure(error: unknown): RuntimeFailure {
+  if (typeof error === "object" && error !== null && "failure" in error) return (error as { failure: RuntimeFailure }).failure;
+  return { kind: "plugin_failure", detail: dependencyErrorMessage(error) };
+}
+
+export function bindNotificationsDependency(): CapabilityDependencyBinding<NotificationsClient, InteractionDependencyInvoker> {
+  return {
+    descriptor: {
+      capability_id: CAPABILITY_ID,
+      descriptor_version: DESCRIPTOR_VERSION,
+      operations: ["notify"],
+      stream_operations: [],
+      event_operations: ["notify"],
+    },
+    createClient(invoke) {
+      return {
+      async notify(event, context) {
+        let payload: unknown;
+        try {
+          payload = JSON.parse(encodeNotifyEvent(event)) as unknown;
+        } catch {
+          return [{ subscriberInstance: invoke.providerInstance, admission: "unavailable" }];
+        }
+        const call = context ?? { requestId: "0" as Uint64, cancelled: false };
+        try {
+          const outcome = await invoke.publishEvent("notify", call, payload);
+          return [{ subscriberInstance: invoke.providerInstance, admission: outcome.kind === "accepted" ? "accepted" : outcome.failure.kind === "resource_exhausted" ? "exhausted" : "unavailable" }];
+        } catch {
+          return [{ subscriberInstance: invoke.providerInstance, admission: "unavailable" }];
+        }
+      },
+      };
+    },
+  };
+}
+
+export const bindDependency = bindNotificationsDependency;
 
 export const portableValueProfile = lensoContractRuntime.portableValueProfile;
