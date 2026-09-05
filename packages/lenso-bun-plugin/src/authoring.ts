@@ -58,10 +58,25 @@ export function dependency<
   });
 }
 
-/** A generated declaration that validates and defaults Plugin configuration. */
+/** A declaration that publishes a portable schema and decodes Plugin configuration. */
 export interface ConfigDeclaration<Config> {
   readonly kind: "lenso.config";
+  readonly schema: boolean | Readonly<Record<string, unknown>>;
   parse(input: unknown): Config;
+}
+
+/** Declares the portable schema and runtime decoder for one Plugin configuration. */
+export function configuration<Config>(
+  schema: boolean | Readonly<Record<string, unknown>>,
+  parse: (input: unknown) => Config,
+): ConfigDeclaration<Config> {
+  if (
+    typeof schema !== "boolean" &&
+    (typeof schema !== "object" || schema === null || Array.isArray(schema))
+  ) {
+    throw new Error("configuration schema must be a JSON Schema object or boolean");
+  }
+  return Object.freeze({ kind: "lenso.config" as const, schema, parse });
 }
 
 export interface ProviderDeclaration<Instance extends object> {

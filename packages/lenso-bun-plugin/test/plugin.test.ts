@@ -4,6 +4,7 @@ import {
   describePortablePlugin,
   definePlugin,
   dependency,
+  configuration,
   invokePortablePlugin,
   provider,
   startPlugin,
@@ -19,6 +20,21 @@ const descriptor = {
   stream_operations: [],
   event_operations: [],
 } as const;
+
+test("configuration keeps portable validation beside its typed decoder", () => {
+  const config = configuration(
+    {
+      type: "object",
+      additionalProperties: false,
+      properties: { prefix: { type: "string" } },
+      required: ["prefix"],
+    },
+    (input) => ({ prefix: (input as { prefix: string }).prefix }),
+  );
+  const plugin = definePlugin({ config, providers: [] });
+  expect(plugin.config?.schema).toEqual(config.schema);
+  expect(plugin.config?.parse({ prefix: "Hello " })).toEqual({ prefix: "Hello " });
+});
 
 function binding(): CapabilityProviderBinding {
   return {

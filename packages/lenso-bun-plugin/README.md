@@ -80,10 +80,11 @@ return any complete object used by Provider handlers. `stop` runs at most once
 during managed shutdown.
 
 ```ts
+import { configuration, definePlugin } from "@lenso/bun-plugin";
+
 export default definePlugin({
   dependencies: { store: storeDependency },
-  configurationSchema: NotesConfig.schema,
-  decodeConfig: NotesConfig.parse,
+  config: configuration(NotesConfig.schema, NotesConfig.parse),
   async create({ config, dependencies }) {
     return { config, store: dependencies.store, cache: new Map() };
   },

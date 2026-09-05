@@ -300,6 +300,17 @@ export function definePlugin(
       }
     }
   }
+  if (
+    candidate.config !== undefined &&
+    (candidate.config.kind !== "lenso.config" ||
+      typeof candidate.config.parse !== "function" ||
+      (typeof candidate.config.schema !== "boolean" &&
+        (typeof candidate.config.schema !== "object" ||
+          candidate.config.schema === null ||
+          Array.isArray(candidate.config.schema))))
+  ) {
+    throw new Error("config must be a configuration(...) declaration");
+  }
   const maxConcurrentRequests =
     candidate.maxConcurrentRequests ?? DEFAULT_MAX_CONCURRENT_REQUESTS;
   if (!Number.isSafeInteger(maxConcurrentRequests) || maxConcurrentRequests <= 0) {
