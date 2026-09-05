@@ -1097,7 +1097,7 @@ impl PluginLifecycle for BunPluginLifecycle {
     }
 
     fn deactivate(&self, _context: DeactivateContext) -> PluginFuture {
-        Box::pin(futures::future::ready(Ok(())))
+        self.transport.deactivate()
     }
 }
 
