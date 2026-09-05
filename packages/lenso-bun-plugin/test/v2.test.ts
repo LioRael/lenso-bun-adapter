@@ -157,7 +157,7 @@ function identity(session: string, plugin: string) {
     artifact_digest: `sha256:${"a".repeat(64)}`,
     contract_digest: `sha256:${"b".repeat(64)}`,
     runtime_profile: "lenso.bun-authoring@2",
-    value_profile: "lenso-json-value-v1",
+    value_profile: "lenso-json-value-v1" as const,
   };
 }
 

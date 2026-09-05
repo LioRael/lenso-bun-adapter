@@ -1,15 +1,39 @@
 use std::{
+    any::Any,
+    fs,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    process::Command,
+    rc::Rc,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
     thread,
     time::Duration,
 };
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use lenso_bun_adapter::{BunAuthoringCallback, BunAuthoringHost};
-use lenso_kernel::RuntimeFailure;
+use lenso_app_plan::{
+    AppComposition, CapabilityBinding, CapabilityEndpointPlan, CapabilityRequirementPlan,
+    ExecutionClassId, PluginInstancePlan,
+};
+use lenso_bun_adapter::{
+    BUN_AUTHORING_RUNTIME_PROFILE, BunAdapter, BunAuthoringCallback, BunAuthoringHost,
+};
+use lenso_kernel::{
+    DeterministicDriver, ExecutionAdapterCatalog, InvocationContext, Kernel, NativeRequestEndpoint,
+    PluginDependencyHandle, RequestCapability, RuntimeFailure,
+};
+use lenso_native_adapter::{
+    NativePluginFactory, NativePluginFactoryContext, NativePluginInstance, NativePluginRegistry,
+};
 use lenso_process_protocol::authoring::*;
+use lenso_runtime_codec::{
+    ArtifactCatalog, ArtifactHandle, JsonCapabilityCodec, JsonHostRequestFuture,
+    JsonInvocationOutcome,
+};
 use serde_json::json;
+use sha2::{Digest as _, Sha256};
 
 const STORE_ID: &str = "example.document-store@1";
 const SYNC_ID: &str = "example.sync@1";
@@ -17,6 +41,361 @@ const VERSION: &str = "1.0.0";
 const STORE_DIGEST: &str =
     "sha256:1100000000000000000000000000000000000000000000000000000000000011";
 const SYNC_DIGEST: &str = "sha256:2200000000000000000000000000000000000000000000000000000000000022";
+const ECHO_ID: &str = "example.echo@1";
+const ECHO_DIGEST: &str = "sha256:4400000000000000000000000000000000000000000000000000000000000044";
+
+#[derive(Debug)]
+struct Echo;
+
+impl RequestCapability for Echo {
+    type Request = serde_json::Value;
+    type Response = serde_json::Value;
+    type DomainError = serde_json::Value;
+
+    const ID: &'static str = ECHO_ID;
+    const DESCRIPTOR_VERSION: &'static str = VERSION;
+}
+
+#[derive(Debug)]
+struct EchoCodec;
+
+impl JsonCapabilityCodec for EchoCodec {
+    fn capability_id(&self) -> &'static str {
+        ECHO_ID
+    }
+
+    fn descriptor_version(&self) -> &'static str {
+        VERSION
+    }
+
+    fn descriptor_digest(&self) -> &'static str {
+        ECHO_DIGEST
+    }
+
+    fn request_operations(&self) -> &'static [&'static str] {
+        &["echo"]
+    }
+
+    fn encode_request(
+        &self,
+        _: &str,
+        request: &dyn Any,
+    ) -> Result<serde_json::Value, RuntimeFailure> {
+        request.downcast_ref::<serde_json::Value>().cloned().ok_or(
+            RuntimeFailure::ProtocolViolation {
+                capability: ECHO_ID,
+            },
+        )
+    }
+
+    fn decode_response(
+        &self,
+        _: &str,
+        value: serde_json::Value,
+    ) -> Result<Box<dyn Any>, RuntimeFailure> {
+        Ok(Box::new(value))
+    }
+
+    fn decode_domain_error(
+        &self,
+        _: &str,
+        value: serde_json::Value,
+    ) -> Result<Box<dyn Any>, RuntimeFailure> {
+        Ok(Box::new(value))
+    }
+}
+
+#[derive(Debug)]
+struct EmptyConsumerFactory;
+
+impl NativePluginFactory for EmptyConsumerFactory {
+    fn package_id(&self) -> &'static str {
+        "test.echo-consumer"
+    }
+
+    fn instantiate(
+        &self,
+        _context: NativePluginFactoryContext<'_>,
+    ) -> Result<NativePluginInstance, RuntimeFailure> {
+        Ok(NativePluginInstance::default())
+    }
+}
+
+#[derive(Debug)]
+struct Store;
+
+impl RequestCapability for Store {
+    type Request = serde_json::Value;
+    type Response = serde_json::Value;
+    type DomainError = serde_json::Value;
+
+    const ID: &'static str = STORE_ID;
+    const DESCRIPTOR_VERSION: &'static str = VERSION;
+}
+
+#[derive(Debug)]
+struct StoreEndpoint {
+    calls: Arc<AtomicUsize>,
+}
+
+impl NativeRequestEndpoint for StoreEndpoint {
+    fn capability_id(&self) -> &'static str {
+        STORE_ID
+    }
+
+    fn descriptor_version(&self) -> &'static str {
+        VERSION
+    }
+
+    fn operations(&self) -> &'static [&'static str] {
+        &["read"]
+    }
+
+    fn invoke(
+        &self,
+        operation: &str,
+        request: Box<dyn Any>,
+        _context: InvocationContext,
+    ) -> futures::future::LocalBoxFuture<
+        'static,
+        Result<Result<Box<dyn Any>, Box<dyn Any>>, RuntimeFailure>,
+    > {
+        let calls = self.calls.clone();
+        let operation = operation.to_owned();
+        Box::pin(async move {
+            if operation != "read" {
+                return Err(RuntimeFailure::UnknownOperation {
+                    capability: STORE_ID,
+                    operation,
+                });
+            }
+            let request = request.downcast::<serde_json::Value>().map_err(|_| {
+                RuntimeFailure::ProtocolViolation {
+                    capability: STORE_ID,
+                }
+            })?;
+            calls.fetch_add(1, Ordering::Relaxed);
+            Ok(Ok(Box::new(*request) as Box<dyn Any>))
+        })
+    }
+}
+
+#[derive(Debug)]
+struct StoreFactory {
+    calls: Arc<AtomicUsize>,
+}
+
+impl NativePluginFactory for StoreFactory {
+    fn package_id(&self) -> &'static str {
+        "test.store"
+    }
+
+    fn instantiate(
+        &self,
+        _context: NativePluginFactoryContext<'_>,
+    ) -> Result<NativePluginInstance, RuntimeFailure> {
+        Ok(NativePluginInstance::new(vec![Rc::new(StoreEndpoint {
+            calls: self.calls.clone(),
+        })]))
+    }
+}
+
+#[derive(Debug)]
+struct StoreCodec;
+
+impl JsonCapabilityCodec for StoreCodec {
+    fn capability_id(&self) -> &'static str {
+        STORE_ID
+    }
+
+    fn descriptor_version(&self) -> &'static str {
+        VERSION
+    }
+
+    fn descriptor_digest(&self) -> &'static str {
+        STORE_DIGEST
+    }
+
+    fn request_operations(&self) -> &'static [&'static str] {
+        &["read"]
+    }
+
+    fn encode_request(
+        &self,
+        _: &str,
+        request: &dyn Any,
+    ) -> Result<serde_json::Value, RuntimeFailure> {
+        request.downcast_ref::<serde_json::Value>().cloned().ok_or(
+            RuntimeFailure::ProtocolViolation {
+                capability: STORE_ID,
+            },
+        )
+    }
+
+    fn decode_response(
+        &self,
+        _: &str,
+        value: serde_json::Value,
+    ) -> Result<Box<dyn Any>, RuntimeFailure> {
+        Ok(Box::new(value))
+    }
+
+    fn decode_domain_error(
+        &self,
+        _: &str,
+        value: serde_json::Value,
+    ) -> Result<Box<dyn Any>, RuntimeFailure> {
+        Ok(Box::new(value))
+    }
+
+    fn invoke_host_request(
+        &self,
+        dependency: PluginDependencyHandle,
+        operation: String,
+        request: serde_json::Value,
+        context: InvocationContext,
+    ) -> JsonHostRequestFuture {
+        Box::pin(async move {
+            match dependency
+                .typed::<Store>()?
+                .invoke_with_context(&operation, context, request)
+                .await?
+            {
+                Ok(value) => Ok(JsonInvocationOutcome::Success(value)),
+                Err(error) => Ok(JsonInvocationOutcome::DomainError(error)),
+            }
+        })
+    }
+}
+
+#[test]
+fn create_and_stop_can_call_named_dependencies() {
+    let source = fixture("v2-lifecycle-child.ts");
+    let bundle = tempfile::tempdir().unwrap();
+    let entrypoint = bundle.path().join("plugin.js");
+    assert!(
+        Command::new(bun_binary())
+            .arg("build")
+            .arg("--target")
+            .arg("bun")
+            .arg("--outfile")
+            .arg(&entrypoint)
+            .arg(source)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let bytes = fs::read(&entrypoint).unwrap();
+    let digest = format!("sha256:{}", hex::encode(Sha256::digest(&bytes)));
+    let artifact = ArtifactHandle::open(&entrypoint, &digest, bytes.len() as u64).unwrap();
+    let artifacts = ArtifactCatalog::new()
+        .with_artifact("lifecycle", artifact)
+        .unwrap();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let adapters = ExecutionAdapterCatalog::new()
+        .with_adapter(NativePluginRegistry::new().with_factory(StoreFactory {
+            calls: calls.clone(),
+        }))
+        .unwrap()
+        .with_adapter(
+            BunAdapter::production(bun_binary())
+                .with_artifacts(artifacts)
+                .with_authoring_codec(StoreCodec),
+        )
+        .unwrap();
+    let plan = AppComposition::new(
+        vec![
+            PluginInstancePlan::new("store", "test.store")
+                .with_capability(CapabilityEndpointPlan::new(STORE_ID, VERSION, ["read"])),
+            PluginInstancePlan::new("lifecycle", "test.bun-lifecycle")
+                .with_authoring(2, BUN_AUTHORING_RUNTIME_PROFILE)
+                .with_entrypoint("plugin")
+                .with_execution_class(ExecutionClassId::bun_child_process())
+                .with_requirement(
+                    CapabilityRequirementPlan::one(STORE_ID, VERSION).with_requirement_id("source"),
+                ),
+        ],
+        vec![
+            CapabilityBinding::new("lifecycle", STORE_ID, VERSION, "store")
+                .with_requirement_id("source"),
+        ],
+    )
+    .resolve()
+    .unwrap();
+    let driver = DeterministicDriver::new();
+    let app = driver
+        .run(Kernel::start(plan, driver.clone(), adapters))
+        .expect("create dependency should complete through the lifecycle callback pump");
+    assert_eq!(calls.load(Ordering::Relaxed), 1);
+    assert!(matches!(
+        driver.run(app.shutdown(Duration::from_secs(1))),
+        lenso_kernel::ShutdownOutcome::Clean
+    ));
+    assert_eq!(calls.load(Ordering::Relaxed), 2);
+}
+
+#[test]
+fn execution_adapter_runs_authoring_v2_through_kernel_lifecycle() {
+    let source = fixture("v2-echo-child.ts");
+    let bundle = tempfile::tempdir().unwrap();
+    let entrypoint = bundle.path().join("plugin.js");
+    let build = Command::new(bun_binary())
+        .arg("build")
+        .arg("--target")
+        .arg("bun")
+        .arg("--outfile")
+        .arg(&entrypoint)
+        .arg(source)
+        .status()
+        .expect("Bun should build the admitted execution artifact");
+    assert!(build.success());
+    let bytes = fs::read(&entrypoint).unwrap();
+    let digest = format!("sha256:{}", hex::encode(Sha256::digest(&bytes)));
+    let artifact = ArtifactHandle::open(&entrypoint, &digest, bytes.len() as u64).unwrap();
+    let artifacts = ArtifactCatalog::new()
+        .with_artifact("echo", artifact)
+        .unwrap();
+    let adapter = BunAdapter::production(bun_binary())
+        .with_artifacts(artifacts)
+        .with_authoring_codec(EchoCodec);
+    let adapters = ExecutionAdapterCatalog::new()
+        .with_adapter(NativePluginRegistry::new().with_factory(EmptyConsumerFactory))
+        .unwrap()
+        .with_adapter(adapter)
+        .unwrap();
+    let plan = AppComposition::new(
+        vec![
+            PluginInstancePlan::new("echo", "test.bun-echo")
+                .with_authoring(2, BUN_AUTHORING_RUNTIME_PROFILE)
+                .with_entrypoint("plugin")
+                .with_execution_class(ExecutionClassId::bun_child_process())
+                .with_capability(CapabilityEndpointPlan::new(ECHO_ID, VERSION, ["echo"])),
+            PluginInstancePlan::new("consumer", "test.echo-consumer")
+                .with_requirement(CapabilityRequirementPlan::one(ECHO_ID, VERSION)),
+        ],
+        vec![CapabilityBinding::new("consumer", ECHO_ID, VERSION, "echo")],
+    )
+    .resolve()
+    .unwrap();
+    let driver = DeterministicDriver::new();
+    let app = driver
+        .run(Kernel::start(plan, driver.clone(), adapters))
+        .expect("Bun Authoring V2 App should start");
+    let result = driver
+        .run(
+            app.handle::<Echo>("consumer")
+                .unwrap()
+                .invoke("echo", json!({"value": "complete object"})),
+        )
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(result, json!({"value": "complete object"}));
+    assert!(matches!(
+        driver.run(app.shutdown(Duration::from_secs(1))),
+        lenso_kernel::ShutdownOutcome::Clean
+    ));
+}
 
 #[derive(Debug, Clone)]
 struct Callback {

@@ -43,7 +43,7 @@
   },
   "dependencies": {
     "@lenso/contract-runtime": "0.3.0",
-    "@lenso/process-protocol": "0.2.0",
+    "@lenso/process-protocol": "0.2.1",
     "typescript": "7.0.2"
   },
   "devDependencies": {

@@ -226,6 +226,10 @@ impl BunAuthoringHost {
         self.callback.shutdown();
         self.process.stop();
     }
+
+    pub(crate) fn exit_waiter(&self) -> futures::channel::oneshot::Receiver<()> {
+        self.process.subscribe_exit()
+    }
 }
 
 impl Drop for BunAuthoringHost {

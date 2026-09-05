@@ -19,7 +19,7 @@ use lenso_kernel::{
     PluginFuture, PluginLifecycle, PreparedBinding, PreparedEventBinding, PreparedNativeApp,
     PreparedNativePlugin, PreparedStreamBinding, RuntimeFailure,
 };
-use lenso_runtime_codec::ArtifactCatalog;
+use lenso_runtime_codec::{ArtifactCatalog, JsonCapabilityCodec};
 use serde_json::Value;
 
 use crate::{
@@ -129,11 +129,12 @@ pub trait BunCapabilityCodec: std::fmt::Debug + 'static {
 /// Configuration owned by one Bun Execution Adapter package.
 #[derive(Clone, Debug)]
 pub struct BunAdapterConfig {
-    bun_binary: PathBuf,
+    pub(crate) bun_binary: PathBuf,
     wire: BunWire,
     working_directory: PathBuf,
-    max_frame_bytes: usize,
-    request_queue_capacity: usize,
+    pub(crate) max_frame_bytes: usize,
+    pub(crate) request_queue_capacity: usize,
+    pub(crate) cancellation_settlement_timeout: std::time::Duration,
 }
 
 impl BunAdapterConfig {
@@ -145,6 +146,7 @@ impl BunAdapterConfig {
             working_directory: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             max_frame_bytes: crate::DEFAULT_MAX_FRAME_BYTES,
             request_queue_capacity: crate::protocol::DEFAULT_REQUEST_QUEUE_CAPACITY,
+            cancellation_settlement_timeout: std::time::Duration::from_secs(2),
         }
     }
 
@@ -169,6 +171,13 @@ impl BunAdapterConfig {
         self
     }
 
+    /// Sets how long a cancelled Authoring V2 invocation may remain unsettled.
+    #[must_use]
+    pub fn with_cancellation_settlement_timeout(mut self, timeout: std::time::Duration) -> Self {
+        self.cancellation_settlement_timeout = timeout;
+        self
+    }
+
     /// Returns the selected wire implementation.
     pub const fn wire(&self) -> BunWire {
         self.wire
@@ -181,6 +190,7 @@ pub struct BunAdapter {
     config: BunAdapterConfig,
     artifacts: Option<ArtifactCatalog>,
     codecs: BTreeMap<String, Rc<dyn BunCapabilityCodec>>,
+    authoring_codecs: BTreeMap<String, Rc<dyn JsonCapabilityCodec>>,
 }
 
 impl BunAdapter {
@@ -190,6 +200,7 @@ impl BunAdapter {
             config: BunAdapterConfig::new(bun_binary, wire),
             artifacts: None,
             codecs: BTreeMap::new(),
+            authoring_codecs: BTreeMap::new(),
         }
     }
 
@@ -221,6 +232,14 @@ impl BunAdapter {
         self
     }
 
+    /// Registers a generated portable codec for Authoring V2 endpoints and named dependencies.
+    #[must_use]
+    pub fn with_authoring_codec(mut self, codec: impl JsonCapabilityCodec) -> Self {
+        self.authoring_codecs
+            .insert(codec.capability_id().to_owned(), Rc::new(codec));
+        self
+    }
+
     /// Returns the selected wire implementation.
     pub const fn wire(&self) -> BunWire {
         self.config.wire
@@ -232,6 +251,25 @@ impl BunAdapter {
         plan: &ResolvedAppPlan,
         instance: &PluginInstancePlan,
     ) -> Result<PreparedNativePlugin, RuntimeFailure> {
+        if instance.authoring_version() == 2
+            && instance.runtime_profile() == crate::BUN_AUTHORING_RUNTIME_PROFILE
+        {
+            let artifacts =
+                self.artifacts
+                    .as_ref()
+                    .ok_or_else(|| RuntimeFailure::InvalidResolvedPlan {
+                        detail: format!(
+                            "Bun Authoring V2 Instance `{}` has no admitted Artifact",
+                            instance.instance_key()
+                        ),
+                    })?;
+            return crate::adapter_v2::prepare_instance(
+                &self.config,
+                artifacts,
+                &self.authoring_codecs,
+                instance,
+            );
+        }
         if instance.entrypoint() == "default" || instance.entrypoint().is_empty() {
             return Err(RuntimeFailure::InvalidResolvedPlan {
                 detail: format!(
@@ -476,8 +514,11 @@ impl BunAdapter {
 
 impl lenso_kernel::ExecutionAdapter for BunAdapter {
     fn supports_runtime_profile(&self, authoring_version: u32, profile: &str) -> bool {
-        (authoring_version == 1 && profile == self.execution_class().as_str())
-            || (authoring_version == 2 && profile == PLUGIN_AUTHORING_V2_RUNTIME_PROFILE)
+        (authoring_version == 1
+            && (profile == self.execution_class().as_str() || profile == "lenso.bun-authoring@1"))
+            || (authoring_version == 2
+                && (profile == PLUGIN_AUTHORING_V2_RUNTIME_PROFILE
+                    || profile == crate::BUN_AUTHORING_RUNTIME_PROFILE))
     }
 
     fn execution_class(&self) -> ExecutionClassId {

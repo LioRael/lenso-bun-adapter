@@ -7,7 +7,7 @@ import type {
 } from "./index.js";
 
 /** A finite Host-owned scope used while constructing or stopping one instance. */
-export interface LifecycleContext {
+export interface LifecycleContext extends InvocationContext {
   readonly signal: AbortSignal;
   remainingTimeoutMs(): number;
 }

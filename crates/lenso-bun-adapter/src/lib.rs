@@ -6,8 +6,9 @@
 //! contract.
 
 mod adapter;
-mod host_imports;
+mod adapter_v2;
 mod authoring_v2;
+mod host_imports;
 mod protocol;
 mod request;
 mod server;

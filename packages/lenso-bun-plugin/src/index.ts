@@ -6,6 +6,9 @@ import type {
 import type {
   ConfigDeclaration,
   DependencyDeclarations,
+  DependencyCardinality,
+  DependencyDeclaration,
+  LifecycleContext,
   PluginDefinition,
   PluginOptionsWithCreate,
   PluginOptionsWithDefaultInstance,
@@ -60,6 +63,72 @@ export type BunPluginDefinition<
     | undefined,
 > = PluginDefinition<Instance, Config, Dependencies>;
 
+export type DependencyTable = Readonly<
+  Record<string, import("./authoring.js").CapabilityDependencyBinding<unknown>>
+>;
+
+type DependencyClients<Dependencies extends DependencyTable> = {
+  readonly [Name in keyof Dependencies]: Dependencies[Name] extends import("./authoring.js").CapabilityDependencyBinding<
+    infer Client
+  >
+    ? Client
+    : never;
+};
+
+interface LegacyPluginInputs<Dependencies extends DependencyTable, Config> {
+  readonly config: Config;
+  readonly dependencies: DependencyClients<Dependencies>;
+}
+
+interface LegacyPluginOptions<
+  Dependencies extends DependencyTable,
+  Config,
+  Instance,
+> {
+  readonly providers: ReadonlyArray<CapabilityProviderBinding<Instance>>;
+  readonly dependencies?: Dependencies;
+  readonly configurationSchema?: boolean | Readonly<Record<string, unknown>>;
+  readonly decodeConfig?: (value: unknown) => Config;
+  readonly create?: (
+    inputs: LegacyPluginInputs<Dependencies, Config>,
+  ) => Instance | Promise<Instance>;
+  readonly stop?: (instance: Instance) => void | Promise<void>;
+  readonly maxConcurrentRequests?: number;
+}
+
+interface LegacyPluginDefinition<
+  Dependencies extends DependencyTable,
+  Config,
+  Instance,
+> {
+  readonly providers: ReadonlyArray<CapabilityProviderBinding<Instance>>;
+  readonly dependencies: Dependencies;
+  readonly configurationSchema: boolean | Readonly<Record<string, unknown>> | undefined;
+  readonly decodeConfig: ((value: unknown) => Config) | undefined;
+  readonly create: ((inputs: LegacyPluginInputs<Dependencies, Config>) => Instance | Promise<Instance>) | undefined;
+  readonly stop: ((instance: Instance) => void | Promise<void>) | undefined;
+  readonly maxConcurrentRequests: number;
+}
+
+interface RuntimePluginDefinition {
+  readonly providers: ReadonlyArray<PluginProvider<object>>;
+  readonly dependencies?: Readonly<Record<string, unknown>>;
+  readonly config?: ConfigDeclaration<unknown>;
+  readonly configurationSchema?: boolean | Readonly<Record<string, unknown>>;
+  readonly decodeConfig?: (value: unknown) => unknown;
+  readonly create?: (
+    inputs: unknown,
+    lifecycle?: LifecycleContext,
+  ) => object | Promise<object>;
+  readonly stop?: (
+    instance: object,
+    lifecycle?: LifecycleContext,
+  ) => void | Promise<void>;
+  readonly maxConcurrentRequests: number;
+}
+
+type AnyPluginDefinition = RuntimePluginDefinition;
+
 /** Runtime-independent descriptor consumed by generated QuickJS and Bun wrappers. */
 export interface PortablePluginDescriptor {
   readonly abi: "lenso.json-request@1";
@@ -73,7 +142,7 @@ export interface PortablePluginDescriptor {
     readonly requirement_id: string;
     readonly capability_id: string;
     readonly descriptor_version: string;
-    readonly cardinality: "one";
+    readonly cardinality: "one" | "optional" | "many";
   }>;
 }
 
@@ -140,6 +209,13 @@ interface ActivationRequest {
 }
 
 export function definePlugin<
+  Dependencies extends DependencyTable = Readonly<Record<never, never>>,
+  Config = unknown,
+  Instance extends object = LegacyPluginInputs<Dependencies, Config>,
+>(
+  options: LegacyPluginOptions<Dependencies, Config, Instance>,
+): LegacyPluginDefinition<Dependencies, Config, Instance>;
+export function definePlugin<
   Config extends ConfigDeclaration<unknown> | undefined,
   Dependencies extends DependencyDeclarations | undefined,
   Factory extends (...arguments_: never[]) => object | Promise<object>,
@@ -161,22 +237,20 @@ export function definePlugin<
   Dependencies
 >;
 export function definePlugin(
-  options:
-    | PluginOptionsWithCreate<
-        ConfigDeclaration<unknown> | undefined,
-        DependencyDeclarations | undefined,
-        (...arguments_: never[]) => object | Promise<object>
-      >
-    | PluginOptionsWithDefaultInstance<
-        ConfigDeclaration<unknown> | undefined,
-        DependencyDeclarations | undefined
-      >,
-): PluginDefinition<object> {
-  if (options.providers.length === 0) {
-    throw new Error("a Bun Plugin must register at least one Capability Provider");
-  }
+  options: object,
+): object {
+  const candidate = options as {
+    readonly providers: ReadonlyArray<PluginProvider<object>>;
+    readonly dependencies?: Readonly<Record<string, unknown>>;
+    readonly config?: ConfigDeclaration<unknown>;
+    readonly configurationSchema?: boolean | Readonly<Record<string, unknown>>;
+    readonly decodeConfig?: (value: unknown) => unknown;
+    readonly create?: (...arguments_: never[]) => object | Promise<object>;
+    readonly stop?: (...arguments_: never[]) => void | Promise<void>;
+    readonly maxConcurrentRequests?: number;
+  };
   const seen = new Set<string>();
-  for (const provider of options.providers) {
+  for (const provider of candidate.providers) {
     validateDescriptor(provider.descriptor);
     if (seen.has(provider.descriptor.capability_id)) {
       throw new Error(
@@ -193,16 +267,26 @@ export function definePlugin(
       );
     }
   }
-  if (options.dependencies !== undefined) {
+  if (candidate.dependencies !== undefined) {
     const dependencyIds = new Set<string>();
-    for (const [name, declaration] of Object.entries(options.dependencies)) {
+    for (const [name, raw] of Object.entries(candidate.dependencies)) {
       if (name.length === 0) throw new Error("dependency name must not be empty");
+      if (typeof raw !== "object" || raw === null) {
+        throw new Error(`dependency ${name} is invalid`);
+      }
+      if (!("kind" in raw)) {
+        const legacy = raw as import("./authoring.js").CapabilityDependencyBinding<unknown>;
+        validateDescriptor(legacy.descriptor);
+        continue;
+      }
+      const declaration = raw as import("./authoring.js").DependencyDeclaration<
+        unknown,
+        import("./authoring.js").DependencyCardinality
+      >;
       if (declaration.kind !== "lenso.dependency") {
         throw new Error(`dependency ${name} is not a dependency(...) declaration`);
       }
-      if (dependencyIds.has(declaration.id)) {
-        throw new Error(`duplicate dependency id ${declaration.id}`);
-      }
+      if (dependencyIds.has(declaration.id)) throw new Error(`duplicate dependency id ${declaration.id}`);
       dependencyIds.add(declaration.id);
       validateDescriptor(declaration.contract.descriptor);
       if (
@@ -217,34 +301,35 @@ export function definePlugin(
     }
   }
   const maxConcurrentRequests =
-    options.maxConcurrentRequests ?? DEFAULT_MAX_CONCURRENT_REQUESTS;
+    candidate.maxConcurrentRequests ?? DEFAULT_MAX_CONCURRENT_REQUESTS;
   if (!Number.isSafeInteger(maxConcurrentRequests) || maxConcurrentRequests <= 0) {
     throw new Error("maxConcurrentRequests must be a positive safe integer");
   }
-  const dependencies = (options.dependencies ?? {}) as Dependencies;
-  for (const [name, dependency] of Object.entries(dependencies)) {
-    if (name.length === 0) throw new Error("dependency names must not be empty");
-    validateDescriptor(dependency.descriptor);
-  }
   if (
-    options.configurationSchema !== undefined &&
-    typeof options.configurationSchema !== "boolean" &&
-    (typeof options.configurationSchema !== "object" ||
-      options.configurationSchema === null ||
-      Array.isArray(options.configurationSchema))
+    candidate.configurationSchema !== undefined &&
+    typeof candidate.configurationSchema !== "boolean" &&
+    (typeof candidate.configurationSchema !== "object" ||
+      candidate.configurationSchema === null ||
+      Array.isArray(candidate.configurationSchema))
   ) {
     throw new Error("configurationSchema must be a JSON Schema object or boolean");
   }
   return Object.freeze({
-    ...(options.config === undefined ? {} : { config: options.config }),
-    ...(options.dependencies === undefined
+    ...(candidate.config === undefined ? {} : { config: candidate.config }),
+    ...(candidate.dependencies === undefined
       ? {}
-      : { dependencies: Object.freeze({ ...options.dependencies }) }),
-    providers: Object.freeze([...options.providers]),
-    ...(options.create === undefined ? {} : { create: options.create }),
-    ...(options.stop === undefined ? {} : { stop: options.stop }),
+      : { dependencies: Object.freeze({ ...candidate.dependencies }) }),
+    ...(candidate.configurationSchema === undefined
+      ? {}
+      : { configurationSchema: candidate.configurationSchema }),
+    ...(candidate.decodeConfig === undefined
+      ? {}
+      : { decodeConfig: candidate.decodeConfig }),
+    providers: Object.freeze([...candidate.providers]),
+    ...(candidate.create === undefined ? {} : { create: candidate.create }),
+    ...(candidate.stop === undefined ? {} : { stop: candidate.stop }),
     maxConcurrentRequests,
-  });
+  }) as AnyPluginDefinition;
 }
 
 type PluginOptionsInstance<
@@ -264,30 +349,86 @@ function concreteProviders<Instance extends object>(
   return providers as ReadonlyArray<CapabilityProviderBinding>;
 }
 
+function runtimeDefinition(value: unknown): RuntimePluginDefinition {
+  return value as RuntimePluginDefinition;
+}
+
+function dependencyDefinition(
+  name: string,
+  raw: unknown,
+): {
+  readonly requirementId: string;
+  readonly binding: import("./authoring.js").CapabilityDependencyBinding<unknown>;
+  readonly cardinality: DependencyCardinality;
+} {
+  if (typeof raw === "object" && raw !== null && "kind" in raw) {
+    const declaration = raw as DependencyDeclaration<
+      unknown,
+      DependencyCardinality
+    >;
+    return {
+      requirementId: declaration.id,
+      binding: declaration.contract,
+      cardinality: declaration.cardinality,
+    };
+  }
+  return {
+    requirementId: name,
+    binding: raw as import("./authoring.js").CapabilityDependencyBinding<unknown>,
+    cardinality: "one",
+  };
+}
+
+function legacyLifecycleContext(requestId: string): LifecycleContext {
+  const controller = new AbortController();
+  return Object.freeze({
+    requestId: requestId as InvocationContext["requestId"],
+    cancelled: false,
+    signal: controller.signal,
+    remainingTimeoutMs: () => Number.MAX_SAFE_INTEGER,
+  }) as LifecycleContext;
+}
+
 /** Describes the same Plugin definition without touching any Bun global API. */
+export function describePortablePlugin<
+  Dependencies extends DependencyTable,
+  Config,
+  Instance extends object,
+>(
+  definition: LegacyPluginDefinition<Dependencies, Config, Instance>,
+): PortablePluginDescriptor;
 export function describePortablePlugin<
   Instance extends object,
   Config extends ConfigDeclaration<unknown> | undefined,
   Dependencies extends DependencyDeclarations | undefined,
 >(
   definition: BunPluginDefinition<Instance, Config, Dependencies>,
-): PortablePluginDescriptor {
-  const providers = concreteProviders(definition.providers);
+): PortablePluginDescriptor;
+export function describePortablePlugin(definition: unknown): PortablePluginDescriptor {
+  const runtime = runtimeDefinition(definition);
+  const providers = concreteProviders(runtime.providers);
+  const requiredCapabilities = Object.entries(runtime.dependencies ?? {}).map(
+    ([name, raw]) => {
+      const declaration = dependencyDefinition(name, raw);
+      return {
+        requirement_id: declaration.requirementId,
+        capability_id: declaration.binding.descriptor.capability_id,
+        descriptor_version: declaration.binding.descriptor.descriptor_version,
+        cardinality: declaration.cardinality,
+      };
+    },
+  );
   return {
     abi: "lenso.json-request@1",
+    ...(runtime.configurationSchema === undefined
+      ? {}
+      : { configuration_schema: runtime.configurationSchema }),
     capabilities: providers.map(({ descriptor }) => ({
       capability_id: descriptor.capability_id,
       descriptor_version: descriptor.descriptor_version,
       request_operations: [...descriptor.operations],
     })),
-    required_capabilities: Object.entries(definition.dependencies).map(
-      ([requirement_id, { descriptor }]) => ({
-        requirement_id,
-        capability_id: descriptor.capability_id,
-        descriptor_version: descriptor.descriptor_version,
-        cardinality: "one" as const,
-      }),
-    ),
+    required_capabilities: requiredCapabilities,
   };
 }
 
@@ -301,8 +442,25 @@ export async function invokePortablePlugin<
   capability: string,
   operation: string,
   requestJson: string,
+): Promise<string>;
+export async function invokePortablePlugin<
+  Dependencies extends DependencyTable,
+  Config,
+  Instance extends object,
+>(
+  definition: LegacyPluginDefinition<Dependencies, Config, Instance>,
+  capability: string,
+  operation: string,
+  requestJson: string,
+): Promise<string>;
+export async function invokePortablePlugin(
+  definition: unknown,
+  capability: string,
+  operation: string,
+  requestJson: string,
 ): Promise<string> {
-  const provider = concreteProviders(definition.providers).find(
+  const runtime = runtimeDefinition(definition);
+  const provider = concreteProviders(runtime.providers).find(
     ({ descriptor }) => descriptor.capability_id === capability,
   );
   if (provider === undefined) throw new Error(`unknown capability ${capability}`);
@@ -335,7 +493,14 @@ export function serve<
   Dependencies extends DependencyDeclarations | undefined,
 >(
   definition: BunPluginDefinition<Instance, Config, Dependencies>,
-): BunPluginServer {
+): BunPluginServer;
+export function serve<
+  Dependencies extends DependencyTable,
+  Config,
+  Instance extends object,
+>(definition: LegacyPluginDefinition<Dependencies, Config, Instance>): BunPluginServer;
+export function serve(definition: unknown): BunPluginServer {
+  const runtime = runtimeDefinition(definition);
   const arguments_ = Bun.argv.slice(2);
   const transport = argument(arguments_, "--lenso-transport", "json-rpc-http");
   if (transport !== "json-rpc-http") {
@@ -352,9 +517,9 @@ export function serve<
   const expectedEndpoints = jsonArgument<CapabilityProviderDescriptor[]>(
     arguments_,
     "--lenso-endpoints-json",
-    concreteProviders(definition.providers).map(({ descriptor }) => descriptor),
+    concreteProviders(runtime.providers).map(({ descriptor }) => descriptor),
   );
-  return startPlugin(definition, {
+  return startPlugin(runtime as BunPluginDefinition<object>, {
     announceReady: true,
     managedLifecycle: true,
     expectedEndpoints,
@@ -369,8 +534,21 @@ export function startPlugin<
   Dependencies extends DependencyDeclarations | undefined,
 >(
   definition: BunPluginDefinition<Instance, Config, Dependencies>,
+  options?: StartPluginOptions,
+): BunPluginServer;
+export function startPlugin<
+  Dependencies extends DependencyTable,
+  Config,
+  Instance extends object,
+>(
+  definition: LegacyPluginDefinition<Dependencies, Config, Instance>,
+  options?: StartPluginOptions,
+): BunPluginServer;
+export function startPlugin(
+  input: unknown,
   options: StartPluginOptions = {},
 ): BunPluginServer {
+  const definition = runtimeDefinition(input);
   const maxFrameBytes = options.maxFrameBytes ?? DEFAULT_MAX_FRAME_BYTES;
   const maxRetiredRequestIds =
     options.maxRetiredRequestIds ?? DEFAULT_MAX_RETIRED_REQUEST_IDS;
@@ -396,10 +574,10 @@ export function startPlugin<
   let admittedHandshake: Handshake | undefined;
   let accepting = true;
   const managedLifecycle = options.managedLifecycle ?? false;
-  let instance: Instance | undefined =
+  let instance: object | undefined =
     !managedLifecycle &&
-    Object.keys(definition.dependencies).length === 0 && definition.create === undefined
-      ? Object.freeze({ config: Object.freeze({}), dependencies: Object.freeze({}) }) as Instance
+    Object.keys(definition.dependencies ?? {}).length === 0 && definition.create === undefined
+      ? Object.freeze({ config: Object.freeze({}), dependencies: Object.freeze({}) })
       : undefined;
 
   const retire = (requestId: number): void => {
@@ -497,11 +675,13 @@ export function startPlugin<
         try {
           const dependencies = createDependencyClients(definition, activation);
           const rawConfig = activation.configuration;
-          const config = (definition.decodeConfig?.(rawConfig) ?? rawConfig) as Config;
+          const config = definition.decodeConfig?.(rawConfig)
+            ?? definition.config?.parse(rawConfig)
+            ?? rawConfig;
           const inputs = Object.freeze({ config, dependencies });
           instance = definition.create
-            ? await definition.create(inputs)
-            : (inputs as Instance);
+            ? await definition.create(inputs, legacyLifecycleContext("activate"))
+            : inputs;
           if (instance === undefined) {
             throw new Error("Plugin create must return a complete instance");
           }
@@ -529,7 +709,7 @@ export function startPlugin<
         for (const state of activeRequests.values()) state.cancelled = true;
         if (instance !== undefined && definition.stop !== undefined) {
           try {
-            await definition.stop(instance);
+            await definition.stop(instance, legacyLifecycleContext("shutdown"));
           } catch (error) {
             return jsonRpcResult(id, {
               kind: "runtime",
@@ -631,14 +811,10 @@ export function startPlugin<
   };
 }
 
-function createDependencyClients<
-  Dependencies extends DependencyTable,
-  Config,
-  Instance,
->(
-  definition: BunPluginDefinition<Dependencies, Config, Instance>,
+function createDependencyClients(
+  definition: RuntimePluginDefinition,
   activation: ActivationRequest,
-): DependencyClients<Dependencies> {
+): Readonly<Record<string, unknown>> {
   if (
     typeof activation.imports_url !== "string" ||
     !activation.imports_url.startsWith("http://127.0.0.1:") ||
@@ -660,18 +836,26 @@ function createDependencyClients<
   const claimed = new Set<string>();
   const clients: Record<string, unknown> = {};
   let nextImportRequestId = 1;
-  for (const [name, dependency] of Object.entries(definition.dependencies)) {
-    const exact = admitted.get(name);
-    const legacy = admittedByCapability.get(dependency.descriptor.capability_id);
+  for (const [name, raw] of Object.entries(definition.dependencies ?? {})) {
+    const dependency = dependencyDefinition(name, raw);
+    if (dependency.cardinality !== "one") {
+      throw new Error(
+        `legacy Bun activation does not support ${dependency.cardinality} dependency ${dependency.requirementId}`,
+      );
+    }
+    const exact = admitted.get(dependency.requirementId);
+    const legacy = admittedByCapability.get(
+      dependency.binding.descriptor.capability_id,
+    );
     const descriptor = exact ?? (legacy?.length === 1 ? legacy[0] : undefined);
-    if (!descriptor || !sameEndpoints([descriptor], [dependency.descriptor])) {
+    if (!descriptor || !sameEndpoints([descriptor], [dependency.binding.descriptor])) {
       throw new Error(`Host did not admit dependency ${name}`);
     }
     if (claimed.has(descriptor.requirement_id)) {
       throw new Error(`Host import ${descriptor.requirement_id} was claimed more than once`);
     }
     claimed.add(descriptor.requirement_id);
-    clients[name] = dependency.createClient(async (operation, context, payload) => {
+    clients[name] = dependency.binding.createClient(async (operation, context, payload) => {
       const requestId = nextImportRequestId;
       nextImportRequestId = requestId >= Number.MAX_SAFE_INTEGER ? 1 : requestId + 1;
       if (!descriptor.operations.includes(operation)) {
@@ -717,7 +901,7 @@ function createDependencyClients<
       };
     });
   }
-  return Object.freeze(clients) as DependencyClients<Dependencies>;
+  return Object.freeze(clients);
 }
 
 function validateDescriptor(descriptor: CapabilityProviderDescriptor): void {

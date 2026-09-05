@@ -81,10 +81,14 @@ type InternalInvocationContext = BunInvocationContext & {
   readonly [remainingNanos]: () => string;
 };
 
-interface ActiveInvocation {
-  readonly params: InvokeParams;
+interface ActiveContext {
+  readonly params: { readonly scope: InvocationScope };
   readonly controller: AbortController;
   readonly context: BunInvocationContext;
+}
+
+interface ActiveInvocation extends ActiveContext {
+  readonly params: InvokeParams;
 }
 
 /** Runs one statically built complete-object Plugin over authenticated JSON-RPC/HTTP. */
@@ -106,7 +110,7 @@ class BunAuthoringServer<
   Dependencies extends DependencyDeclarations | undefined,
 > {
   readonly #active = new Map<string, ActiveInvocation>();
-  readonly #contexts = new WeakMap<InvocationContext, ActiveInvocation>();
+  readonly #contexts = new WeakMap<InvocationContext, ActiveContext>();
   readonly #retired = new Set<string>();
   readonly #bootstrapSecret: Uint8Array;
   #initialize: InitializeParams | undefined;
@@ -260,14 +264,18 @@ class BunAuthoringServer<
     validateAuthoringMessage(params, "construct", initialize.identity);
     if (this.#constructionAttempted) throw new Error("Bun Plugin constructed more than once");
     this.#constructionAttempted = true;
+    const active = lifecycleActive(
+      params.lifecycle_scope_id,
+      params.remaining_budget_nanos,
+    );
+    this.#contexts.set(active.context, active);
     try {
-      const controller = new AbortController();
       const inputs = this.#inputs(initialize);
       const instance = this.definition.create === undefined
         ? (inputs as unknown as Instance)
         : await this.definition.create(
           inputs,
-          lifecycleContext(params.remaining_budget_nanos, controller.signal),
+          active.context,
         );
       if (typeof instance !== "object" || instance === null) {
         throw new Error("Plugin factory must return one complete object");
@@ -285,6 +293,8 @@ class BunAuthoringServer<
         lifecycle_scope_id: params.lifecycle_scope_id,
         outcome: { kind: "failed", detail: boundedError(error) },
       };
+    } finally {
+      this.#contexts.delete(active.context);
     }
   }
 
@@ -362,6 +372,7 @@ class BunAuthoringServer<
         active.params.operation,
         active.context,
         active.params.payload,
+        this.#instance!,
       );
       outcome = toWireOutcome(result, active.params);
       if (active.controller.signal.aborted) state = "cancelled";
@@ -392,14 +403,17 @@ class BunAuthoringServer<
   }
 
   async #outboundCall(
-    parent: ActiveInvocation,
+    parent: ActiveContext,
     route: RouteDescriptor,
     operation: string,
     payload: unknown,
   ): Promise<ProviderDispatchOutcome> {
     const initialize = this.#requireInitialize();
     if (parent.controller.signal.aborted) {
-      return { kind: "runtime", failure: { kind: "cancelled", detail: parent.params.correlation_id } };
+      return {
+        kind: "runtime",
+        failure: { kind: "cancelled", detail: String(parent.context.requestId) },
+      };
     }
     if (this.#activeOutboundCalls >= initialize.limits.max_active_outbound_calls) {
       return { kind: "runtime", failure: { kind: "resource_exhausted", detail: operation } };
@@ -456,16 +470,22 @@ class BunAuthoringServer<
     let hook: StoppedResult["hook"] = "not_declared";
     const diagnostics: Array<{ readonly code: string; readonly detail: string }> = [];
     if (this.definition.stop !== undefined) {
+      const active = lifecycleActive(
+        params.cleanup_scope_id,
+        params.remaining_budget_nanos,
+      );
+      this.#contexts.set(active.context, active);
       try {
-        const controller = new AbortController();
         await this.definition.stop(
           this.#instance,
-          lifecycleContext(params.remaining_budget_nanos, controller.signal),
+          active.context,
         );
         hook = "completed";
       } catch (error) {
         hook = "failed";
         diagnostics.push({ code: "plugin_stop_failed", detail: boundedError(error) });
+      } finally {
+        this.#contexts.delete(active.context);
       }
     }
     const result: StoppedResult = {
@@ -632,9 +652,29 @@ function invocationContext(
   });
 }
 
-function lifecycleContext(remaining: string, signal: AbortSignal): LifecycleContext {
+function lifecycleActive(scopeId: string, remaining: string): ActiveContext {
+  const controller = new AbortController();
   const budget = remainingBudget(remaining);
-  return Object.freeze({ signal, remainingTimeoutMs: budget.milliseconds });
+  const context: InternalInvocationContext = Object.freeze({
+    requestId: scopeId as InvocationContext["requestId"],
+    get cancelled() { return controller.signal.aborted; },
+    signal: controller.signal,
+    remainingTimeoutMs: budget.milliseconds,
+    [remainingNanos]: budget.nanoseconds,
+  });
+  return {
+    params: {
+      scope: {
+        scope_id: scopeId,
+        parent_scope_id: null,
+        remaining_budget_nanos: remaining,
+        permissions: [],
+        extensions: [],
+      },
+    },
+    controller,
+    context,
+  };
 }
 
 function remainingBudget(initial: string): {
