@@ -156,7 +156,10 @@ class BunAuthoringServer<
       if (rpc.jsonrpc !== "2.0" || id === undefined || typeof rpc.method !== "string") {
         throw new Error("invalid JSON-RPC request");
       }
-      const result = await this.#dispatch(rpc.method, rpc.params);
+      const params = Array.isArray(rpc.params) && rpc.params.length === 1
+        ? rpc.params[0]
+        : rpc.params;
+      const result = await this.#dispatch(rpc.method, params);
       return boundedJsonResponse({ jsonrpc: "2.0", id, result }, limit);
     } catch (error) {
       return boundedJsonResponse({

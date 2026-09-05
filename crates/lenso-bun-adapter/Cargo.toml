@@ -11,10 +11,15 @@ description = "Bun process Execution Adapter for Lenso vNext."
 process-test-fixture = ["dep:lenso-process-sdk"]
 
 [dependencies]
+axum.workspace = true
+base64.workspace = true
 futures.workspace = true
+getrandom.workspace = true
+hmac.workspace = true
 jsonrpsee = { version = "0.26", default-features = false, features = ["http-client", "server"] }
 lenso-app-plan = { version = "0.4.1" }
 lenso-kernel = { version = "0.3.2" }
+lenso-process-protocol = { version = "0.2.0" }
 lenso-runtime-codec = { version = "0.3.0" }
 lenso-process-sdk = { version = "0.1.0", optional = true }
 serde.workspace = true
