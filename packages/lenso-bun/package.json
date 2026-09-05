@@ -1,6 +1,6 @@
 {
   "name": "@lenso/bun",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "description": "The supported Bun authoring SDK for Lenso Plugins and official Capability projections.",
   "type": "module",
   "license": "MIT",
@@ -45,7 +45,7 @@
     "test": "bun test test"
   },
   "dependencies": {
-    "@lenso/bun-plugin": "0.2.1",
+    "@lenso/bun-plugin": "0.3.0",
     "@lenso/contract-runtime": "0.3.0"
   },
   "devDependencies": {
