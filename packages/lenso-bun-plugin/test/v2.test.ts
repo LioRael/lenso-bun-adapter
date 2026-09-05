@@ -95,6 +95,7 @@ test("cancelled noncooperative work retains capacity until physical termination"
     operation: "block",
     payload: {},
   });
+  void first.catch(() => {});
   await Bun.sleep(20);
   expect(await rpc(child.origin, "lenso.cancel", {
     session,
@@ -119,7 +120,6 @@ test("cancelled noncooperative work retains capacity until physical termination"
   child.process.kill();
   await child.process.exited;
   callback.server.stop();
-  void first.catch(() => {});
 });
 
 test("generated clients use exact Stream/Event routes with optional and many dependencies", async () => {
