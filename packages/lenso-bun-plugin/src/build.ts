@@ -16,6 +16,21 @@ export interface BuildPackageIdentity {
   readonly integrity: string;
 }
 
+/** Static package.json contract used to discover trusted product lowerings. */
+export interface BuildPackageMetadata {
+  readonly api_version: typeof BUILD_API_VERSION;
+  readonly export: string;
+  readonly declarations: Readonly<Record<string, ReadonlyArray<string>>>;
+  readonly handler_parameters?: Readonly<
+    Record<string, Readonly<Record<string, ReadonlyArray<number>>>>
+  >;
+  readonly provider_contracts: ReadonlyArray<BuildProviderContract>;
+}
+
+export interface BuildProviderContract extends AllowedProvider {
+  readonly request_operations: ReadonlyArray<string>;
+}
+
 export type PortableValue =
   | null
   | boolean
@@ -129,6 +144,144 @@ export class BuildOutputError extends Error {
     this.name = "BuildOutputError";
     this.span = span;
   }
+}
+
+/** Validates the product-neutral `lenso.build` package metadata contract. */
+export function validateBuildPackageMetadata(raw: unknown): BuildPackageMetadata {
+  const span = EMPTY_SPAN;
+  const metadata = record(raw, "lenso.build", span);
+  const allowedKeys = new Set([
+    "api_version",
+    "export",
+    "declarations",
+    "handler_parameters",
+    "provider_contracts",
+  ]);
+  const unknown = Object.keys(metadata).find((key) => !allowedKeys.has(key));
+  if (unknown !== undefined) {
+    throw new BuildOutputError(`lenso.build contains unknown field ${unknown}`, span);
+  }
+  for (const required of ["api_version", "export", "declarations", "provider_contracts"]) {
+    if (!(required in metadata)) {
+      throw new BuildOutputError(`lenso.build is missing field ${required}`, span);
+    }
+  }
+  if (metadata.api_version !== BUILD_API_VERSION) {
+    throw new BuildOutputError(
+      `unsupported build metadata API ${String(metadata.api_version)}`,
+      span,
+    );
+  }
+  const buildExport = packageExport(metadata.export, "lenso.build.export", span);
+  const declarationsRecord = record(metadata.declarations, "lenso.build.declarations", span);
+  const declarations: Record<string, ReadonlyArray<string>> = {};
+  for (const [subpath, rawNames] of Object.entries(declarationsRecord)) {
+    packageExport(subpath, "declaration subpath", span, true);
+    const names = array(rawNames, `declarations.${subpath}`, span).map((name, index) =>
+      nonemptyString(name, `declarations.${subpath}[${index}]`, span),
+    );
+    if (new Set(names).size !== names.length) {
+      throw new BuildOutputError(`declarations.${subpath} contains a duplicate export`, span);
+    }
+    declarations[subpath] = Object.freeze(names);
+  }
+  const handlerParameters: Record<string, Readonly<Record<string, ReadonlyArray<number>>>> = {};
+  if (metadata.handler_parameters !== undefined) {
+    const subpaths = record(metadata.handler_parameters, "lenso.build.handler_parameters", span);
+    for (const [subpath, rawExports] of Object.entries(subpaths)) {
+      const declared = declarations[subpath];
+      if (declared === undefined) {
+        throw new BuildOutputError(
+          `handler_parameters.${subpath} has no declared package subpath`,
+          span,
+        );
+      }
+      const exports = record(rawExports, `handler_parameters.${subpath}`, span);
+      const normalized: Record<string, ReadonlyArray<number>> = {};
+      for (const [exportName, rawIndexes] of Object.entries(exports)) {
+        if (!declared.includes(exportName)) {
+          throw new BuildOutputError(
+            `handler_parameters.${subpath}.${exportName} is not a declared export`,
+            span,
+          );
+        }
+        const indexes = array(
+          rawIndexes,
+          `handler_parameters.${subpath}.${exportName}`,
+          span,
+        ).map((value, index) =>
+          nonnegativeInteger(
+            value,
+            `handler_parameters.${subpath}.${exportName}[${index}]`,
+            span,
+          ),
+        );
+        if (new Set(indexes).size !== indexes.length) {
+          throw new BuildOutputError(
+            `handler_parameters.${subpath}.${exportName} contains a duplicate index`,
+            span,
+          );
+        }
+        normalized[exportName] = Object.freeze(indexes);
+      }
+      handlerParameters[subpath] = Object.freeze(normalized);
+    }
+  }
+  const providerContracts = array(
+    metadata.provider_contracts,
+    "lenso.build.provider_contracts",
+    span,
+  ).map((rawContract, index) => {
+    const subject = `provider_contracts[${index}]`;
+    const contract = record(rawContract, subject, span);
+    exactKeys(
+      contract,
+      [
+        "capability_id",
+        "descriptor_version",
+        "descriptor_digest",
+        "request_operations",
+      ],
+      subject,
+      span,
+    );
+    const operations = array(
+      contract.request_operations,
+      `${subject}.request_operations`,
+      span,
+    ).map((operation, operationIndex) =>
+      nonemptyString(operation, `${subject}.request_operations[${operationIndex}]`, span),
+    );
+    if (operations.length === 0 || new Set(operations).size !== operations.length) {
+      throw new BuildOutputError(
+        `${subject}.request_operations must be a nonempty unique list`,
+        span,
+      );
+    }
+    return Object.freeze({
+      capability_id: nonemptyString(contract.capability_id, `${subject}.capability_id`, span),
+      descriptor_version: nonemptyString(
+        contract.descriptor_version,
+        `${subject}.descriptor_version`,
+        span,
+      ),
+      descriptor_digest: canonicalDigest(
+        contract.descriptor_digest,
+        `${subject}.descriptor_digest`,
+        span,
+      ),
+      request_operations: Object.freeze(operations),
+    });
+  });
+  return Object.freeze({
+    api_version: BUILD_API_VERSION,
+    export: buildExport,
+    declarations: Object.freeze(declarations),
+    ...(metadata.handler_parameters === undefined
+      ? {}
+      : { handler_parameters: Object.freeze(handlerParameters) }),
+    provider_contracts: Object.freeze(providerContracts),
+  });
 }
 
 /**
@@ -471,6 +624,21 @@ function safeRelativePath(raw: unknown, subject: string, span: SourceSpan): stri
     throw new BuildOutputError(`${subject} must be a normalized relative path`, span);
   }
   return path.replaceAll("\\", "/");
+}
+
+function packageExport(
+  raw: unknown,
+  subject: string,
+  span: SourceSpan,
+  allowRoot = false,
+): string {
+  const value = nonemptyString(raw, subject, span);
+  if ((allowRoot && value === ".") || /^\.\/[A-Za-z0-9][A-Za-z0-9._/-]*$/u.test(value)) {
+    if (!value.split("/").some((part) => part === ".." || part.length === 0)) {
+      return value;
+    }
+  }
+  throw new BuildOutputError(`${subject} must be a static package export subpath`, span);
 }
 
 function exactKeys(

@@ -5,6 +5,7 @@ import {
   BuildOutputError,
   fingerprintBuildInputs,
   runLowering,
+  validateBuildPackageMetadata,
   verifyBuildFingerprint,
   type HandlerArgument,
   type LoweringInput,
@@ -62,6 +63,32 @@ test("accepts a product-neutral third-party lowering", async () => {
     return validOutput();
   }, input, constraints);
   expect(output.providers[0]?.capability_id).toBe("example.operation@1");
+});
+
+test("validates product declaration and handler metadata without naming a product", () => {
+  const metadata = validateBuildPackageMetadata({
+    api_version: 1,
+    export: "./lenso-build",
+    declarations: { ".": ["operations", "operation"], "./schema": ["string"] },
+    handler_parameters: { ".": { operation: [1] } },
+    provider_contracts: [
+      {
+        capability_id: "example.operation@1",
+        descriptor_version: "1.0.0",
+        descriptor_digest: descriptorDigest,
+        request_operations: ["execute"],
+      },
+    ],
+  });
+
+  expect(metadata.handler_parameters?.["."]?.operation).toEqual([1]);
+  expect(metadata.provider_contracts[0]?.request_operations).toEqual(["execute"]);
+  expect(() =>
+    validateBuildPackageMetadata({
+      ...metadata,
+      handler_parameters: { ".": { unknown: [0] } },
+    }),
+  ).toThrow("is not a declared export");
 });
 
 test("rejects hidden fields and generated path escape", async () => {
