@@ -5,6 +5,7 @@ import type {
 
 import type {
   ConfigDeclaration,
+  CapabilityProviderContract,
   DependencyDeclarations,
   DependencyCardinality,
   DependencyDeclaration,
@@ -51,6 +52,7 @@ export type ProviderStreamReceiveOutcome =
   | { readonly kind: "terminal_success" }
   | { readonly kind: "terminal_domain"; readonly value: unknown }
   | { readonly kind: "runtime"; readonly failure: RuntimeFailure };
+/** @internal Adapter lowering seam. Authors use generated Stream Provider types. */
 export interface ProviderStreamSessionBinding {
   send(message: unknown): Promise<ProviderStreamActionOutcome>;
   receive(): Promise<ProviderStreamReceiveOutcome>;
@@ -65,6 +67,7 @@ export type ProviderEventPublishOutcome =
   | { readonly kind: "accepted" }
   | { readonly kind: "runtime"; readonly failure: RuntimeFailure };
 
+/** @internal Adapter lowering seam. Authors use generated Capability values. */
 export interface CapabilityProviderBinding<Instance = unknown> {
   readonly descriptor: CapabilityProviderDescriptor;
   invokeRequest(
@@ -275,7 +278,8 @@ export function definePlugin(
   options: object,
 ): object {
   const candidate = options as {
-    readonly providers: ReadonlyArray<PluginProvider<object>>;
+    readonly provides?: ReadonlyArray<CapabilityProviderContract<object>>;
+    readonly providers?: ReadonlyArray<PluginProvider<object>>;
     readonly dependencies?: Readonly<Record<string, unknown>>;
     readonly config?: ConfigDeclaration<unknown>;
     readonly configurationSchema?: boolean | Readonly<Record<string, unknown>>;
@@ -284,8 +288,26 @@ export function definePlugin(
     readonly stop?: (...arguments_: never[]) => void | Promise<void>;
     readonly maxConcurrentRequests?: number;
   };
+  if ((candidate.provides === undefined) === (candidate.providers === undefined)) {
+    throw new Error("definePlugin requires exactly one of provides or providers");
+  }
+  const providers: ReadonlyArray<PluginProvider<object>> = candidate.provides === undefined
+    ? candidate.providers!
+    : candidate.provides.map((contract) => {
+        if (
+          contract.kind !== "lenso.capability" ||
+          typeof contract.bindProvider !== "function"
+        ) {
+          throw new Error("provides entries must be generated Capability contracts");
+        }
+        return Object.freeze({
+          kind: "lenso.provider" as const,
+          descriptor: contract.descriptor,
+          bind: (instance: object) => contract.bindProvider(instance),
+        });
+      });
   const seen = new Set<string>();
-  for (const provider of candidate.providers) {
+  for (const provider of providers) {
     validateDescriptor(provider.descriptor);
     if (seen.has(provider.descriptor.capability_id)) {
       throw new Error(
@@ -313,8 +335,10 @@ export function definePlugin(
       if (declaration.kind !== "lenso.dependency") {
         throw new Error(`dependency ${name} is not a dependency(...) declaration`);
       }
-      if (dependencyIds.has(declaration.id)) throw new Error(`duplicate dependency id ${declaration.id}`);
-      dependencyIds.add(declaration.id);
+      const dependencyId = declaration.id ?? name;
+      if (dependencyId.length === 0) throw new Error("dependency id must not be empty");
+      if (dependencyIds.has(dependencyId)) throw new Error(`duplicate dependency id ${dependencyId}`);
+      dependencyIds.add(dependencyId);
       validateDescriptor(declaration.contract.descriptor);
       if (
         declaration.cardinality !== "one" &&
@@ -322,7 +346,7 @@ export function definePlugin(
         declaration.cardinality !== "many"
       ) {
         throw new Error(
-          `dependency ${declaration.id} has invalid cardinality ${String(declaration.cardinality)}`,
+          `dependency ${dependencyId} has invalid cardinality ${String(declaration.cardinality)}`,
         );
       }
     }
@@ -363,7 +387,7 @@ export function definePlugin(
     ...(candidate.decodeConfig === undefined
       ? {}
       : { decodeConfig: candidate.decodeConfig }),
-    providers: Object.freeze([...candidate.providers]),
+    providers: Object.freeze([...providers]),
     ...(candidate.create === undefined ? {} : { create: candidate.create }),
     ...(candidate.stop === undefined ? {} : { stop: candidate.stop }),
     maxConcurrentRequests,
@@ -405,7 +429,7 @@ function dependencyDefinition(
       DependencyCardinality
     >;
     return {
-      requirementId: declaration.id,
+      requirementId: declaration.id ?? name,
       binding: declaration.contract,
       cardinality: declaration.cardinality,
     };

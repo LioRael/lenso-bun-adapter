@@ -27,6 +27,24 @@ function classify(origin: SymbolOrigin) {
         generated_module: "generated/store.ts",
         generated_export: "bindDependency",
       } as const;
+    case "Conversation":
+      return {
+        kind: "contract",
+        capability_id: "example.conversation@1",
+        descriptor_version: "1.0.0",
+        descriptor_digest: `sha256:${"b".repeat(64)}`,
+        generated_module: "generated/conversation.ts",
+        generated_export: "Conversation",
+      } as const;
+    case "Profile":
+      return {
+        kind: "contract",
+        capability_id: "example.profile@1",
+        descriptor_version: "1.0.0",
+        descriptor_digest: `sha256:${"c".repeat(64)}`,
+        generated_module: "generated/profile.ts",
+        generated_export: "Profile",
+      } as const;
     case "tool":
       return {
         kind: "declaration",
@@ -65,6 +83,30 @@ test("extracts aliases, re-exports, constants, and spreads without module evalua
   expect(extracted.create?.kind).toBe("handler");
   expect(extracted.stop?.kind).toBe("handler");
   expect(extracted.sourceFiles.some((file) => file.endsWith("reexports.ts"))).toBe(true);
+});
+
+test("extracts generated Capability values from provides and dependency cardinality", async () => {
+  const extracted = await extractPluginDefinition({
+    entryFile: join(fixtures, "contract-plugin.ts"),
+    classifySymbol: classify,
+  });
+
+  expect(extracted.providers[0]).toMatchObject({
+    kind: "contract",
+    capability_id: "example.conversation@1",
+    generated_export: "Conversation",
+  });
+  expect(extracted.dependencies?.profile).toMatchObject({
+    kind: "value",
+    value: {
+      kind: "lenso.dependency",
+      cardinality: "one",
+      contract: {
+        kind: "contract",
+        capability_id: "example.profile@1",
+      },
+    },
+  });
 });
 
 for (const [fixture, message] of [

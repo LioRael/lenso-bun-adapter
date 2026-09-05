@@ -36,10 +36,18 @@ bun add @lenso/bun
 
 ```ts
 import { definePlugin } from "@lenso/bun";
-import { bindJobsProvider } from "@lenso/bun/capabilities/jobs";
-import { jobs } from "./jobs.ts"; // Implements JobsProvider.
+import {
+  Jobs,
+  type JobsProvider,
+} from "@lenso/bun/capabilities/jobs";
+import { jobs } from "./jobs.ts"; // `jobs satisfies JobsProvider`.
 
-export default definePlugin({ providers: [bindJobsProvider(jobs)] });
+export default definePlugin({
+  provides: [Jobs],
+  create() {
+    return jobs satisfies JobsProvider;
+  },
+});
 ```
 
 Plugin projects created by Lenso contain a generated entrypoint that imports
@@ -49,12 +57,13 @@ the process handshake, or implement the transport.
 Custom Capability contracts can still be generated during authoring. Official
 Capability projections belong in `@lenso/bun`, not beside Rust crate source.
 
-The SDK accepts generated Request, bidirectional Stream, and Event Providers,
+The Bun runtime accepts generated Request, bidirectional Stream, and Event Providers,
 alongside per-Instance construction, resolved Request dependency clients, and
 bounded stop hooks over the production JSON-RPC loopback wire. Stream sessions
 support ordered messages, half-close, terminal outcomes, and cancellation;
-Event publication acknowledges bounded admission. Framed stdio remains a
-conformance and benchmark wire, not a user-facing authoring API.
+Event publication awaits the handler before acknowledging bounded admission. Outbound
+Stream/Event dependency clients and the equivalent Wasm authoring projection remain
+fail-closed. Framed stdio remains a conformance and benchmark wire.
 
 The source was extracted from `LioRael/lenso` at monorepo commit
 `67d21499548d07e92c2f6529d7c8345e58c067d9` under ADR 0064. Imported subtrees

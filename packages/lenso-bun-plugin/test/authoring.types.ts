@@ -7,6 +7,15 @@ import {
   type ConfigDeclaration,
   type DependencyDeclarations,
 } from "../src/index.ts";
+import {
+  Conversation,
+  type ConversationProvider,
+} from "./fixtures/generated/conversation.ts";
+import {
+  Notifications,
+  type NotificationsProvider,
+} from "./fixtures/generated/notifications.ts";
+import { Profile, type ProfileClient } from "./fixtures/generated/profile.ts";
 
 interface StoreClient {
   get(key: string): Promise<string | undefined>;
@@ -120,4 +129,26 @@ definePlugin({
   providers: [],
   // @ts-expect-error Agent-owned syntax is not a generic Plugin option.
   tools: [],
+});
+
+definePlugin({
+  provides: [Conversation, Notifications],
+  dependencies: { profile: Profile.required() },
+  create({ dependencies }) {
+    dependencies.profile satisfies ProfileClient;
+    return {
+      async *chat(_context, request) {
+        yield { text: request.room };
+      },
+      async notify(_context, _event) {},
+    } satisfies ConversationProvider & NotificationsProvider;
+  },
+});
+
+definePlugin({
+  provides: [Conversation],
+  // @ts-expect-error create must return the methods required by every provided Capability.
+  create() {
+    return { unrelated: true };
+  },
 });

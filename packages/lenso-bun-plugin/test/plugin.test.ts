@@ -10,8 +10,11 @@ import {
   startPlugin,
   type CapabilityProviderBinding,
   type CapabilityDependencyBinding,
+  type LifecycleContext,
   type ProviderDispatchOutcome,
 } from "../src/index.ts";
+import { Conversation } from "./fixtures/generated/conversation.ts";
+import { Notifications } from "./fixtures/generated/notifications.ts";
 
 const descriptor = {
   capability_id: "example.greeting@1",
@@ -20,6 +23,69 @@ const descriptor = {
   stream_operations: [],
   event_operations: [],
 } as const;
+
+const invocationContext: InvocationContext = {
+  requestId: "test" as InvocationContext["requestId"],
+  cancelled: false,
+};
+const lifecycleContext: LifecycleContext = {
+  ...invocationContext,
+  signal: new AbortController().signal,
+  remainingTimeoutMs: () => 1_000,
+};
+
+test("generated Capability values bind create results and lower server-output streams", async () => {
+  const definition = definePlugin({
+    provides: [Conversation],
+    create() {
+      return {
+        async *chat(_context: InvocationContext, request: { readonly room: string }) {
+          yield { text: `joined ${request.room}` };
+        },
+      };
+    },
+  });
+  const declaration = definition.providers[0]!;
+  expect("kind" in declaration && declaration.kind).toBe("lenso.provider");
+  if (!("kind" in declaration) || declaration.kind !== "lenso.provider") return;
+  const instance = await definition.create!({}, lifecycleContext);
+  const binding = declaration.bind(instance);
+  const opened = await binding.openStream!(
+    "chat",
+    invocationContext,
+    { room: "general" },
+    instance,
+  );
+  expect(opened.kind).toBe("opened");
+  if (opened.kind !== "opened") return;
+  expect(await opened.stream.receive()).toEqual({
+    kind: "message",
+    value: { text: "joined general" },
+  });
+  expect(await opened.stream.send({ text: "unexpected input" })).toMatchObject({
+    kind: "runtime",
+    failure: { kind: "protocol_violation" },
+  });
+  expect(await opened.stream.receive()).toEqual({ kind: "terminal_success" });
+});
+
+test("generated Event bindings await and map asynchronous rejection", async () => {
+  const binding = Notifications.bindProvider({
+    async notify() {
+      await Promise.resolve();
+      throw new Error("async event failed");
+    },
+  });
+  expect(
+    await binding.publishEvent("notify", invocationContext, {
+      message: "ready",
+      sequence: 1,
+    }),
+  ).toEqual({
+    kind: "runtime",
+    failure: { kind: "plugin_failure", detail: "async event failed" },
+  });
+});
 
 test("configuration keeps portable validation beside its typed decoder", () => {
   const config = configuration(
