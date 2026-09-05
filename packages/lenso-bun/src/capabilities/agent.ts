@@ -3,6 +3,7 @@ import * as lensoContractRuntime from "@lenso/contract-runtime";
 
 export const CAPABILITY_ID = "lenso.agent@1";
 export const DESCRIPTOR_VERSION = "1.1.0";
+export const DESCRIPTOR_DIGEST = "sha256:e995b7af328e09be4fc8510188d5034d535cd7294e8a743f980ffec6b6a0b01a";
 export const PORTABLE = true;
 export const CROSS_LANE_TRANSFER = false;
 
@@ -17,6 +18,14 @@ export type RuntimeFailure = lensoContractRuntime.RuntimeFailure;
 export type UnknownDomainError = lensoContractRuntime.UnknownDomainError;
 export type StreamEvent<Message, DomainError> = lensoContractRuntime.StreamEvent<Message, DomainError>;
 export type StreamSession<Message, DomainError> = lensoContractRuntime.StreamSession<Message, DomainError>;
+
+export interface CapabilityContractReference<Client> {
+  readonly capability_id: string;
+  readonly descriptor_version: string;
+  readonly descriptor_digest: string;
+  readonly generated_client: string;
+  readonly __client?: Client;
+}
 
 export interface RunTurnRequest {
   input: string;
@@ -47,6 +56,8 @@ export interface AgentClient {
 export interface AgentProvider {
   run_turn(context: InvocationContext, request: RunTurnRequest): Promise<RunTurnResult>;
 }
+
+export const AGENT_CONTRACT: CapabilityContractReference<AgentClient> = { capability_id: CAPABILITY_ID, descriptor_version: DESCRIPTOR_VERSION, descriptor_digest: DESCRIPTOR_DIGEST, generated_client: "AgentClient" };
 
 export type ProviderDispatchOutcome =
   | { readonly kind: "success"; readonly value: unknown }

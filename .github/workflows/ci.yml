@@ -23,7 +23,7 @@ jobs:
         with:
           bun-version: 1.2.21
       - run: bun install --frozen-lockfile
-      - run: cargo install --git https://github.com/LioRael/lenso-protocols --rev 9769bc5dc828fd9111da6d28a4ecd5f1bb198ab4 lenso-contract-codegen --locked
+      - run: cargo install lenso-contract-codegen --version 0.7.4 --locked
       - run: bun run --filter '@lenso/bun' capabilities:check
       - run: bun run build
       - run: bun run typecheck

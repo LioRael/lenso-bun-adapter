@@ -7,6 +7,9 @@ test("published SDK exports the Bun runtime and official Jobs projection", async
   expect(sdk.serve).toBeFunction();
   expect(jobs.bindJobsProvider).toBeFunction();
   expect(jobs.CAPABILITY_ID).toBe("lenso.jobs@1");
+  expect(jobs.JOBS_CONTRACT.capability_id).toBe("lenso.jobs@1");
+  expect(jobs.JOBS_CONTRACT.descriptor_digest).toBe(jobs.DESCRIPTOR_DIGEST);
+  expect(jobs.JOBS_CONTRACT.createClient).toBeFunction();
 });
 
 test("publishes every locked Capability projection", async () => {
