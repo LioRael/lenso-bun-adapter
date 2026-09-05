@@ -288,7 +288,12 @@ test("constructs one instance from admitted config and dependency clients, then 
       if (typeof prefix !== "string") throw new Error("prefix is required");
       return { prefix };
     },
-    create({ config, dependencies }) {
+    async create({ config, dependencies }) {
+      const seeded = await dependencies.store.get("seed", {
+        requestId: "startup" as InvocationContext["requestId"],
+        cancelled: false,
+      });
+      if (seeded.kind !== "success") throw new Error("startup dependency failed");
       return { prefix: config.prefix, store: dependencies.store };
     },
     providers: [provider],
@@ -311,15 +316,18 @@ test("constructs one instance from admitted config and dependency clients, then 
     },
   ]);
   const importToken = "test-import-token-123456";
+  const importRequestIds: number[] = [];
   const imports = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
     async fetch(request) {
       expect(request.headers.get("authorization")).toBe(`Bearer ${importToken}`);
       const envelope = (await request.json()) as {
-        id: string;
-        params: [{ payload: { key: string } }];
+        id: number;
+        params: [{ request_id: number; payload: { key: string } }];
       };
+      expect(envelope.params[0].request_id).toBe(envelope.id);
+      importRequestIds.push(envelope.id);
       return Response.json({
         jsonrpc: "2.0",
         id: envelope.id,
@@ -354,6 +362,7 @@ test("constructs one instance from admitted config and dependency clients, then 
         imports: [{ requirement_id: "store", ...storeDescriptor }],
       })).result,
     ).toBe(true);
+    expect(importRequestIds).toEqual([1]);
     expect(
       (await rpc(server.port, 4, "lenso.request", {
         request_id: 21,
@@ -363,6 +372,7 @@ test("constructs one instance from admitted config and dependency clients, then 
         payload: { name: "ada" },
       })).result,
     ).toEqual({ kind: "success", value: "Hello ADA" });
+    expect(importRequestIds).toEqual([1, 2]);
     expect((await rpc(server.port, 5, "lenso.shutdown", { session })).result).toBe(true);
     expect(stopped).toBe(true);
   } finally {

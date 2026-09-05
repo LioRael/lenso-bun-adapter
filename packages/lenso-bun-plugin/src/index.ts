@@ -616,6 +616,7 @@ function createDependencyClients<
   }
   const claimed = new Set<string>();
   const clients: Record<string, unknown> = {};
+  let nextImportRequestId = 1;
   for (const [name, dependency] of Object.entries(definition.dependencies)) {
     const exact = admitted.get(name);
     const legacy = admittedByCapability.get(dependency.descriptor.capability_id);
@@ -628,6 +629,8 @@ function createDependencyClients<
     }
     claimed.add(descriptor.requirement_id);
     clients[name] = dependency.createClient(async (operation, context, payload) => {
+      const requestId = nextImportRequestId;
+      nextImportRequestId = requestId >= Number.MAX_SAFE_INTEGER ? 1 : requestId + 1;
       if (!descriptor.operations.includes(operation)) {
         return {
           kind: "runtime",
@@ -642,10 +645,10 @@ function createDependencyClients<
         },
         body: JSON.stringify({
           jsonrpc: "2.0",
-          id: (context as InvocationContext & { readonly wireRequestId?: number }).wireRequestId ?? context.requestId,
+          id: requestId,
           method: "lenso.import",
           params: [{
-            request_id: (context as InvocationContext & { readonly wireRequestId?: number }).wireRequestId ?? context.requestId,
+            request_id: requestId,
             requirement_id: descriptor.requirement_id,
             capability_id: descriptor.capability_id,
             operation,
