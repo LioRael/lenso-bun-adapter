@@ -1,4 +1,4 @@
-import { definePlugin, type CapabilityProviderBinding } from "@lenso/bun-plugin";
+import { dependency, definePlugin, provider, type CapabilityProviderBinding } from "@lenso/bun-plugin";
 import {
   bindGreetingDependency,
   type GreetingClient,
@@ -12,13 +12,13 @@ const proxy = {
   event_operations: [],
 } as const;
 
-const source = bindGreetingDependency();
-const destination = bindGreetingDependency();
+const source = dependency({ id: "source", contract: bindGreetingDependency() });
+const destination = dependency({ id: "destination", contract: bindGreetingDependency() });
 type Instance = { source: GreetingClient; destination: GreetingClient };
 
-const provider: CapabilityProviderBinding<Instance> = {
+const proxyProvider = provider<Instance>(proxy, (instance) => ({
   descriptor: proxy,
-  async invokeRequest(operation, context, payload, instance) {
+  async invokeRequest(operation, context, payload) {
     if (operation !== "greet") {
       return { kind: "runtime", failure: { kind: "unknown_operation", operation } };
     }
@@ -42,10 +42,10 @@ const provider: CapabilityProviderBinding<Instance> = {
       value: { message: `${left.value.message} / ${right.value.message}` },
     };
   },
-};
+}));
 
 export default definePlugin({
   dependencies: { source, destination },
   create: ({ dependencies }) => dependencies,
-  providers: [provider],
+  providers: [proxyProvider],
 });

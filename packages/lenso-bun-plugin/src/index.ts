@@ -209,16 +209,9 @@ interface ActivationRequest {
 }
 
 export function definePlugin<
-  Dependencies extends DependencyTable = Readonly<Record<never, never>>,
-  Config = unknown,
-  Instance extends object = LegacyPluginInputs<Dependencies, Config>,
->(
-  options: LegacyPluginOptions<Dependencies, Config, Instance>,
-): LegacyPluginDefinition<Dependencies, Config, Instance>;
-export function definePlugin<
-  Config extends ConfigDeclaration<unknown> | undefined,
-  Dependencies extends DependencyDeclarations | undefined,
   Factory extends (...arguments_: never[]) => object | Promise<object>,
+  Config extends ConfigDeclaration<unknown> | undefined = undefined,
+  Dependencies extends DependencyDeclarations | undefined = undefined,
 >(
   options: PluginOptionsWithCreate<Config, Dependencies, Factory>,
 ): PluginDefinition<
@@ -236,6 +229,13 @@ export function definePlugin<
   Config,
   Dependencies
 >;
+export function definePlugin<
+  Dependencies extends DependencyTable = Readonly<Record<never, never>>,
+  Config = unknown,
+  Instance extends object = LegacyPluginInputs<Dependencies, Config>,
+>(
+  options: LegacyPluginOptions<Dependencies, Config, Instance>,
+): LegacyPluginDefinition<Dependencies, Config, Instance>;
 export function definePlugin(
   options: object,
 ): object {

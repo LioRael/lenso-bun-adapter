@@ -1,7 +1,7 @@
-import { definePlugin } from "@lenso/bun-plugin";
+import { definePlugin, provider } from "@lenso/bun-plugin";
 import { bindProvider, type Provider } from "./generated/greeting.ts";
 
-const greeting: Provider = {
+export const greeting: Provider = {
   async greet(_context, request) {
     return {
       ok: true,
@@ -10,4 +10,14 @@ const greeting: Provider = {
   },
 };
 
-export default definePlugin({ providers: [bindProvider(greeting)] });
+type Instance = { greeting: Provider };
+
+export default definePlugin({
+  create() {
+    return { greeting };
+  },
+  providers: [
+    provider<Instance>(bindProvider(greeting).descriptor, (instance) =>
+      bindProvider(instance.greeting)),
+  ],
+});

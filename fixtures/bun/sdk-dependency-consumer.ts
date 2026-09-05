@@ -1,5 +1,8 @@
 import {
+  configuration,
+  dependency,
   definePlugin,
+  provider,
   type CapabilityProviderBinding,
 } from "@lenso/bun-plugin";
 import {
@@ -15,13 +18,18 @@ const proxy = {
   event_operations: [],
 } as const;
 
-const source = bindGreetingDependency();
+const source = dependency({ id: "source", contract: bindGreetingDependency() });
+const config = configuration(true, (value) => {
+  const prefix = (value as { prefix?: unknown }).prefix;
+  if (typeof prefix !== "string") throw new Error("prefix is required");
+  return { prefix };
+});
 
 type Instance = { source: GreetingClient; prefix: string };
 
-const provider: CapabilityProviderBinding<Instance> = {
+const proxyProvider = provider<Instance>(proxy, (instance) => ({
   descriptor: proxy,
-  async invokeRequest(operation, context, payload, instance) {
+  async invokeRequest(operation, context, payload) {
     if (operation !== "greet") {
       return { kind: "runtime", failure: { kind: "unknown_operation", operation } };
     }
@@ -36,17 +44,13 @@ const provider: CapabilityProviderBinding<Instance> = {
       value: { message: `${instance.prefix}${outcome.value.message}` },
     };
   },
-};
+}));
 
 export default definePlugin({
   dependencies: { source },
-  decodeConfig(value) {
-    const prefix = (value as { prefix?: unknown }).prefix;
-    if (typeof prefix !== "string") throw new Error("prefix is required");
-    return { prefix };
-  },
+  config,
   create({ config, dependencies }) {
     return { source: dependencies.source, prefix: config.prefix };
   },
-  providers: [provider],
+  providers: [proxyProvider],
 });
