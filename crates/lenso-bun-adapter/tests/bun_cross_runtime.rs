@@ -1,6 +1,7 @@
 use std::{
     any::Any,
     collections::VecDeque,
+    fs,
     path::{Path, PathBuf},
     process::Command,
     sync::{Arc, Mutex},
@@ -10,19 +11,20 @@ use std::{
 use futures::{StreamExt, stream::FuturesUnordered};
 use lenso_app_plan::{
     AppComposition, CapabilityBinding, CapabilityEndpointPlan, CapabilityRequirementPlan,
-    ExecutionClassId, PLUGIN_AUTHORING_V2_RUNTIME_PROFILE, PluginInstancePlan, RestartPolicy,
+    ExecutionClassId, PluginInstancePlan, RestartPolicy,
 };
 use lenso_kernel::{
     CancellationToken, DeterministicDriver, EventAdmission, EventCapability,
     ExecutionAdapterCatalog, InvocationContext, Kernel, NativeRequestEndpoint, NativeRequestFuture,
-    RequestCapability, RuntimeDriver, RuntimeFailure, ShutdownOutcome, StreamCapability,
-    StreamEvent,
+    PluginDependencyHandle, RequestCapability, RuntimeDriver, RuntimeFailure, ShutdownOutcome,
+    StreamCapability, StreamEvent,
 };
 #[cfg(feature = "process-test-fixture")]
 use lenso_process_adapter::{EXECUTION_CLASS as PROCESS_EXECUTION_CLASS, ProcessAdapter};
-#[cfg(feature = "process-test-fixture")]
-use lenso_runtime_codec::{ArtifactCatalog, ArtifactHandle, JsonCapabilityCodec};
-#[cfg(feature = "process-test-fixture")]
+use lenso_runtime_codec::{
+    ArtifactCatalog, ArtifactHandle, JsonCapabilityCodec, JsonHostRequestFuture,
+    JsonInvocationOutcome,
+};
 use sha2::{Digest as _, Sha256};
 
 use lenso_bun_adapter::{
@@ -33,6 +35,10 @@ use lenso_bun_adapter::{
 
 const CAPABILITY_ID: &str = "example.greeting@1";
 const DESCRIPTOR_VERSION: &str = "1.0.0";
+const GREETING_DIGEST: &str =
+    "sha256:3300000000000000000000000000000000000000000000000000000000000033";
+const GREETING_PROXY_DIGEST: &str =
+    "sha256:5500000000000000000000000000000000000000000000000000000000000055";
 
 #[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
 struct GreetRequest {
@@ -262,6 +268,83 @@ impl BunCapabilityCodec for GreetingCodec {
     }
 }
 
+impl JsonCapabilityCodec for GreetingCodec {
+    fn capability_id(&self) -> &'static str {
+        CAPABILITY_ID
+    }
+
+    fn descriptor_version(&self) -> &'static str {
+        DESCRIPTOR_VERSION
+    }
+
+    fn descriptor_digest(&self) -> &'static str {
+        GREETING_DIGEST
+    }
+
+    fn request_operations(&self) -> &'static [&'static str] {
+        &["greet"]
+    }
+
+    fn encode_request(
+        &self,
+        operation: &str,
+        request: &dyn Any,
+    ) -> Result<serde_json::Value, RuntimeFailure> {
+        BunCapabilityCodec::encode_request(self, operation, request)
+    }
+
+    fn decode_response(
+        &self,
+        operation: &str,
+        value: serde_json::Value,
+    ) -> Result<Box<dyn Any>, RuntimeFailure> {
+        BunCapabilityCodec::decode_response(self, operation, value)
+    }
+
+    fn decode_domain_error(
+        &self,
+        operation: &str,
+        value: serde_json::Value,
+    ) -> Result<Box<dyn Any>, RuntimeFailure> {
+        BunCapabilityCodec::decode_domain_error(self, operation, value)
+    }
+
+    fn invoke_host_request(
+        &self,
+        dependency: PluginDependencyHandle,
+        operation: String,
+        request: serde_json::Value,
+        context: InvocationContext,
+    ) -> JsonHostRequestFuture {
+        Box::pin(async move {
+            match dependency
+                .typed::<Greeting>()?
+                .invoke_with_context(
+                    &operation,
+                    context,
+                    serde_json::from_value(request).map_err(|_| {
+                        RuntimeFailure::ProtocolViolation {
+                            capability: CAPABILITY_ID,
+                        }
+                    })?,
+                )
+                .await?
+            {
+                Ok(value) => serde_json::to_value(value)
+                    .map(JsonInvocationOutcome::Success)
+                    .map_err(|_| RuntimeFailure::ProtocolViolation {
+                        capability: CAPABILITY_ID,
+                    }),
+                Err(error) => serde_json::to_value(error)
+                    .map(JsonInvocationOutcome::DomainError)
+                    .map_err(|_| RuntimeFailure::ProtocolViolation {
+                        capability: CAPABILITY_ID,
+                    }),
+            }
+        })
+    }
+}
+
 const PROXY_CAPABILITY_ID: &str = "example.greeting-proxy@1";
 
 #[derive(Debug)]
@@ -376,6 +459,83 @@ impl BunCapabilityCodec for GreetingProxyCodec {
         )?)
         .map_err(|_| RuntimeFailure::ProtocolViolation {
             capability: PROXY_CAPABILITY_ID,
+        })
+    }
+}
+
+impl JsonCapabilityCodec for GreetingProxyCodec {
+    fn capability_id(&self) -> &'static str {
+        PROXY_CAPABILITY_ID
+    }
+
+    fn descriptor_version(&self) -> &'static str {
+        DESCRIPTOR_VERSION
+    }
+
+    fn descriptor_digest(&self) -> &'static str {
+        GREETING_PROXY_DIGEST
+    }
+
+    fn request_operations(&self) -> &'static [&'static str] {
+        &["greet"]
+    }
+
+    fn encode_request(
+        &self,
+        operation: &str,
+        request: &dyn Any,
+    ) -> Result<serde_json::Value, RuntimeFailure> {
+        BunCapabilityCodec::encode_request(self, operation, request)
+    }
+
+    fn decode_response(
+        &self,
+        operation: &str,
+        value: serde_json::Value,
+    ) -> Result<Box<dyn Any>, RuntimeFailure> {
+        BunCapabilityCodec::decode_response(self, operation, value)
+    }
+
+    fn decode_domain_error(
+        &self,
+        operation: &str,
+        value: serde_json::Value,
+    ) -> Result<Box<dyn Any>, RuntimeFailure> {
+        BunCapabilityCodec::decode_domain_error(self, operation, value)
+    }
+
+    fn invoke_host_request(
+        &self,
+        dependency: PluginDependencyHandle,
+        operation: String,
+        request: serde_json::Value,
+        context: InvocationContext,
+    ) -> JsonHostRequestFuture {
+        Box::pin(async move {
+            match dependency
+                .typed::<GreetingProxy>()?
+                .invoke_with_context(
+                    &operation,
+                    context,
+                    serde_json::from_value(request).map_err(|_| {
+                        RuntimeFailure::ProtocolViolation {
+                            capability: PROXY_CAPABILITY_ID,
+                        }
+                    })?,
+                )
+                .await?
+            {
+                Ok(value) => serde_json::to_value(value)
+                    .map(JsonInvocationOutcome::Success)
+                    .map_err(|_| RuntimeFailure::ProtocolViolation {
+                        capability: PROXY_CAPABILITY_ID,
+                    }),
+                Err(error) => serde_json::to_value(error)
+                    .map(JsonInvocationOutcome::DomainError)
+                    .map_err(|_| RuntimeFailure::ProtocolViolation {
+                        capability: PROXY_CAPABILITY_ID,
+                    }),
+            }
         })
     }
 }
@@ -957,6 +1117,44 @@ fn fixture(name: &str) -> PathBuf {
         .join(name)
 }
 
+fn authoring_artifacts(entries: &[(&str, &str)]) -> (tempfile::TempDir, ArtifactCatalog) {
+    let bundle = tempfile::tempdir().expect("create Bun fixture bundle");
+    let mut artifacts = ArtifactCatalog::new();
+    for (instance, source) in entries {
+        let entrypoint = bundle.path().join(format!("{instance}.js"));
+        let launcher = bundle.path().join(format!("{instance}.ts"));
+        let sdk = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../packages/lenso-bun-plugin/src/index.ts");
+        fs::write(
+            &launcher,
+            format!(
+                "import {{ servePluginV2 }} from {};\nimport plugin from {};\nawait servePluginV2(plugin);\n",
+                serde_json::to_string(&sdk.to_string_lossy()).unwrap(),
+                serde_json::to_string(&fixture(source).to_string_lossy()).unwrap(),
+            ),
+        )
+        .expect("write Bun Authoring V2 launcher");
+        let build = Command::new(bun_binary())
+            .arg("build")
+            .arg("--target")
+            .arg("bun")
+            .arg("--outfile")
+            .arg(&entrypoint)
+            .arg(&launcher)
+            .status()
+            .expect("Bun should build an admitted fixture artifact");
+        assert!(build.success(), "failed to build {source}");
+        let bytes = fs::read(&entrypoint).expect("read Bun fixture artifact");
+        let digest = format!("sha256:{}", hex::encode(Sha256::digest(&bytes)));
+        let artifact = ArtifactHandle::open(&entrypoint, &digest, bytes.len() as u64)
+            .expect("admit Bun fixture artifact");
+        artifacts = artifacts
+            .with_artifact(*instance, artifact)
+            .expect("bind Bun fixture artifact");
+    }
+    (bundle, artifacts)
+}
+
 fn greeting_plan(script: &Path) -> lenso_app_plan::ResolvedAppPlan {
     greeting_plan_with_consumer(script, script)
 }
@@ -1008,8 +1206,8 @@ fn greeting_plan_with_concurrency(
 
 fn dependency_injection_plan() -> lenso_app_plan::ResolvedAppPlan {
     let provider = PluginInstancePlan::new("greeting-provider", "fixture.bun.greeting")
-        .with_authoring(2, PLUGIN_AUTHORING_V2_RUNTIME_PROFILE)
-        .with_entrypoint(fixture("sdk-request-provider.ts").to_string_lossy())
+        .with_authoring(2, lenso_bun_adapter::BUN_AUTHORING_RUNTIME_PROFILE)
+        .with_entrypoint("plugin")
         .with_execution_class(ExecutionClassId::bun_child_process())
         .with_capability(CapabilityEndpointPlan::new(
             CAPABILITY_ID,
@@ -1017,8 +1215,8 @@ fn dependency_injection_plan() -> lenso_app_plan::ResolvedAppPlan {
             ["greet"],
         ));
     let proxy = PluginInstancePlan::new("greeting-proxy", "fixture.bun.greeting-proxy")
-        .with_authoring(2, PLUGIN_AUTHORING_V2_RUNTIME_PROFILE)
-        .with_entrypoint(fixture("sdk-dependency-consumer-provider.ts").to_string_lossy())
+        .with_authoring(2, lenso_bun_adapter::BUN_AUTHORING_RUNTIME_PROFILE)
+        .with_entrypoint("plugin")
         .with_configuration(r#"{"prefix":"Proxy: "}"#)
         .with_execution_class(ExecutionClassId::bun_child_process())
         .with_requirement(
@@ -1031,8 +1229,8 @@ fn dependency_injection_plan() -> lenso_app_plan::ResolvedAppPlan {
             ["greet"],
         ));
     let caller = PluginInstancePlan::new("caller", "fixture.bun.caller")
-        .with_authoring(2, PLUGIN_AUTHORING_V2_RUNTIME_PROFILE)
-        .with_entrypoint(fixture("sdk-dependency-caller-provider.ts").to_string_lossy())
+        .with_authoring(2, lenso_bun_adapter::BUN_AUTHORING_RUNTIME_PROFILE)
+        .with_entrypoint("plugin")
         .with_execution_class(ExecutionClassId::bun_child_process())
         .with_requirement(
             CapabilityRequirementPlan::one(PROXY_CAPABILITY_ID, DESCRIPTOR_VERSION)
@@ -1062,10 +1260,10 @@ fn dependency_injection_plan() -> lenso_app_plan::ResolvedAppPlan {
 }
 
 fn named_dependency_injection_plan() -> lenso_app_plan::ResolvedAppPlan {
-    let provider = |instance: &str, entrypoint: &str| {
+    let provider = |instance: &str, _entrypoint: &str| {
         PluginInstancePlan::new(instance, format!("fixture.bun.{instance}"))
-            .with_authoring(2, PLUGIN_AUTHORING_V2_RUNTIME_PROFILE)
-            .with_entrypoint(fixture(entrypoint).to_string_lossy())
+            .with_authoring(2, lenso_bun_adapter::BUN_AUTHORING_RUNTIME_PROFILE)
+            .with_entrypoint("plugin")
             .with_execution_class(ExecutionClassId::bun_child_process())
             .with_capability(CapabilityEndpointPlan::new(
                 CAPABILITY_ID,
@@ -1074,8 +1272,8 @@ fn named_dependency_injection_plan() -> lenso_app_plan::ResolvedAppPlan {
             ))
     };
     let proxy = PluginInstancePlan::new("greeting-proxy", "fixture.bun.dual-proxy")
-        .with_authoring(2, PLUGIN_AUTHORING_V2_RUNTIME_PROFILE)
-        .with_entrypoint(fixture("sdk-dual-dependency-consumer-provider.ts").to_string_lossy())
+        .with_authoring(2, lenso_bun_adapter::BUN_AUTHORING_RUNTIME_PROFILE)
+        .with_entrypoint("plugin")
         .with_execution_class(ExecutionClassId::bun_child_process())
         .with_requirement(
             CapabilityRequirementPlan::one(CAPABILITY_ID, DESCRIPTOR_VERSION)
@@ -1091,8 +1289,8 @@ fn named_dependency_injection_plan() -> lenso_app_plan::ResolvedAppPlan {
             ["greet"],
         ));
     let caller = PluginInstancePlan::new("caller", "fixture.bun.caller")
-        .with_authoring(2, PLUGIN_AUTHORING_V2_RUNTIME_PROFILE)
-        .with_entrypoint(fixture("sdk-dependency-caller-provider.ts").to_string_lossy())
+        .with_authoring(2, lenso_bun_adapter::BUN_AUTHORING_RUNTIME_PROFILE)
+        .with_entrypoint("plugin")
         .with_execution_class(ExecutionClassId::bun_child_process())
         .with_requirement(
             CapabilityRequirementPlan::one(PROXY_CAPABILITY_ID, DESCRIPTOR_VERSION)
@@ -1137,8 +1335,8 @@ fn failed_construction_plan() -> lenso_app_plan::ResolvedAppPlan {
     AppComposition::new(
         vec![
             PluginInstancePlan::new("broken", "fixture.bun.broken")
-                .with_authoring(2, PLUGIN_AUTHORING_V2_RUNTIME_PROFILE)
-                .with_entrypoint(fixture("sdk-create-failure.ts").to_string_lossy())
+                .with_authoring(2, lenso_bun_adapter::BUN_AUTHORING_RUNTIME_PROFILE)
+                .with_entrypoint("plugin")
                 .with_execution_class(ExecutionClassId::bun_child_process()),
         ],
         vec![],
@@ -1151,8 +1349,8 @@ fn stop_hook_plan(marker: &Path) -> lenso_app_plan::ResolvedAppPlan {
     AppComposition::new(
         vec![
             PluginInstancePlan::new("lifecycle", "fixture.bun.lifecycle")
-                .with_authoring(2, PLUGIN_AUTHORING_V2_RUNTIME_PROFILE)
-                .with_entrypoint(fixture("sdk-stop-hook.ts").to_string_lossy())
+                .with_authoring(2, lenso_bun_adapter::BUN_AUTHORING_RUNTIME_PROFILE)
+                .with_entrypoint("plugin")
                 .with_execution_class(ExecutionClassId::bun_child_process())
                 .with_configuration(serde_json::json!({ "marker": marker }).to_string()),
         ],
@@ -1165,20 +1363,29 @@ fn stop_hook_plan(marker: &Path) -> lenso_app_plan::ResolvedAppPlan {
 #[test]
 #[ignore = "requires Bun; CI runs ignored cross-runtime tests after installing Bun"]
 fn bun_authoring_v2_create_failure_rejects_startup() {
+    let (_bundle, artifacts) = authoring_artifacts(&[("broken", "sdk-create-failure.ts")]);
     let driver = DeterministicDriver::new();
     let error = driver
         .run(Kernel::start(
             failed_construction_plan(),
             driver.clone(),
-            ExecutionAdapterCatalog::single(BunAdapter::production(bun_binary())),
+            ExecutionAdapterCatalog::single(
+                BunAdapter::production(bun_binary()).with_artifacts(artifacts),
+            ),
         ))
         .expect_err("a failed create must reject startup before readiness");
-    assert!(matches!(error, RuntimeFailure::PluginFailure { .. }));
+    match error {
+        RuntimeFailure::PluginFailure { detail } => {
+            assert!(detail.contains("fixture construction failed"), "{detail}");
+        }
+        other => panic!("expected construction Plugin failure, got {other:?}"),
+    }
 }
 
 #[test]
 #[ignore = "requires Bun; CI runs ignored cross-runtime tests after installing Bun"]
 fn bun_authoring_v2_stop_hook_runs_before_process_release() {
+    let (_bundle, artifacts) = authoring_artifacts(&[("lifecycle", "sdk-stop-hook.ts")]);
     let temporary = tempfile::tempdir().unwrap();
     let marker = temporary.path().join("stopped.txt");
     let driver = DeterministicDriver::new();
@@ -1186,7 +1393,9 @@ fn bun_authoring_v2_stop_hook_runs_before_process_release() {
         .run(Kernel::start(
             stop_hook_plan(&marker),
             driver.clone(),
-            ExecutionAdapterCatalog::single(BunAdapter::production(bun_binary())),
+            ExecutionAdapterCatalog::single(
+                BunAdapter::production(bun_binary()).with_artifacts(artifacts),
+            ),
         ))
         .expect("lifecycle fixture should start");
 
@@ -1201,10 +1410,18 @@ fn bun_authoring_v2_stop_hook_runs_before_process_release() {
 #[test]
 #[ignore = "requires Bun; CI runs ignored cross-runtime tests after installing Bun"]
 fn bun_plugin_calls_its_exact_plan_bound_dependency() {
+    let (_bundle, artifacts) = authoring_artifacts(&[
+        ("greeting-provider", "sdk-request-plugin.ts"),
+        ("greeting-proxy", "sdk-dependency-consumer.ts"),
+        ("caller", "sdk-dependency-caller.ts"),
+    ]);
     let driver = DeterministicDriver::new();
     let adapter = BunAdapter::production(bun_binary())
+        .with_artifacts(artifacts)
         .with_codec(GreetingCodec)
-        .with_codec(GreetingProxyCodec);
+        .with_codec(GreetingProxyCodec)
+        .with_authoring_codec(GreetingCodec)
+        .with_authoring_codec(GreetingProxyCodec);
     let app = driver
         .run(Kernel::start(
             dependency_injection_plan(),
@@ -1229,10 +1446,19 @@ fn bun_plugin_calls_its_exact_plan_bound_dependency() {
 #[test]
 #[ignore = "requires Bun; CI runs ignored cross-runtime tests after installing Bun"]
 fn bun_plugin_routes_equal_capabilities_by_requirement_identity() {
+    let (_bundle, artifacts) = authoring_artifacts(&[
+        ("source-provider", "sdk-request-plugin.ts"),
+        ("destination-provider", "sdk-request-alt-plugin.ts"),
+        ("greeting-proxy", "sdk-dual-dependency-consumer.ts"),
+        ("caller", "sdk-dependency-caller.ts"),
+    ]);
     let driver = DeterministicDriver::new();
     let adapter = BunAdapter::production(bun_binary())
+        .with_artifacts(artifacts)
         .with_codec(GreetingCodec)
-        .with_codec(GreetingProxyCodec);
+        .with_codec(GreetingProxyCodec)
+        .with_authoring_codec(GreetingCodec)
+        .with_authoring_codec(GreetingProxyCodec);
     let app = driver
         .run(Kernel::start(
             named_dependency_injection_plan(),
@@ -1268,7 +1494,7 @@ fn process_dependency_injection_plan() -> lenso_app_plan::ResolvedAppPlan {
             ["greet"],
         ));
     let proxy = PluginInstancePlan::new("greeting-proxy", "fixture.bun.greeting-proxy")
-        .with_authoring(2, PLUGIN_AUTHORING_V2_RUNTIME_PROFILE)
+        .with_authoring(2, lenso_bun_adapter::BUN_AUTHORING_RUNTIME_PROFILE)
         .with_entrypoint(fixture("sdk-dependency-consumer-provider.ts").to_string_lossy())
         .with_configuration(r#"{"prefix":"Proxy: "}"#)
         .with_execution_class(ExecutionClassId::bun_child_process())
@@ -1282,7 +1508,7 @@ fn process_dependency_injection_plan() -> lenso_app_plan::ResolvedAppPlan {
             ["greet"],
         ));
     let caller = PluginInstancePlan::new("caller", "fixture.bun.caller")
-        .with_authoring(2, PLUGIN_AUTHORING_V2_RUNTIME_PROFILE)
+        .with_authoring(2, lenso_bun_adapter::BUN_AUTHORING_RUNTIME_PROFILE)
         .with_entrypoint(fixture("sdk-dependency-caller-provider.ts").to_string_lossy())
         .with_execution_class(ExecutionClassId::bun_child_process())
         .with_requirement(

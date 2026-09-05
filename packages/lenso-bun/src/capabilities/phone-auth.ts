@@ -3,6 +3,7 @@ import * as lensoContractRuntime from "@lenso/contract-runtime";
 
 export const CAPABILITY_ID = "lenso.auth.phone@1";
 export const DESCRIPTOR_VERSION = "1.0.0";
+export const DESCRIPTOR_DIGEST = "sha256:1140db66cc831e18608d35ce467e539918f70f90f6bde5c7fa541668c0c697ac";
 export const PORTABLE = true;
 export const CROSS_LANE_TRANSFER = true;
 
@@ -17,6 +18,14 @@ export type RuntimeFailure = lensoContractRuntime.RuntimeFailure;
 export type UnknownDomainError = lensoContractRuntime.UnknownDomainError;
 export type StreamEvent<Message, DomainError> = lensoContractRuntime.StreamEvent<Message, DomainError>;
 export type StreamSession<Message, DomainError> = lensoContractRuntime.StreamSession<Message, DomainError>;
+
+export interface CapabilityContractReference<Client> extends CapabilityDependencyBinding<Client> {
+  readonly capability_id: string;
+  readonly descriptor_version: string;
+  readonly descriptor_digest: string;
+  readonly generated_client: string;
+  readonly __client?: Client;
+}
 
 export interface PasswordLoginRequest {
   device_id: string | null;
@@ -122,6 +131,8 @@ export interface PhoneProvider {
   start_otp(context: InvocationContext, request: StartOtpRequest): Promise<StartOtpResult>;
   verify_otp(context: InvocationContext, request: VerifyOtpRequest): Promise<VerifyOtpResult>;
 }
+
+export const PHONE_CONTRACT: CapabilityContractReference<PhoneClient> = { ...bindPhoneDependency(), capability_id: CAPABILITY_ID, descriptor_version: DESCRIPTOR_VERSION, descriptor_digest: DESCRIPTOR_DIGEST, generated_client: "PhoneClient" };
 
 export type ProviderDispatchOutcome =
   | { readonly kind: "success"; readonly value: unknown }
@@ -251,5 +262,122 @@ export function bindPhoneProvider(
 
 export type Provider = PhoneProvider;
 export const bindProvider = bindPhoneProvider;
+
+export type DependencyInvoker = (
+  operation: string,
+  context: InvocationContext,
+  payload: unknown,
+) => Promise<ProviderDispatchOutcome>;
+
+export interface CapabilityDependencyBinding<Client> {
+  readonly descriptor: CapabilityProviderDescriptor;
+  createClient(invoke: DependencyInvoker): Client;
+}
+
+function dependencyErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+export function bindPhoneDependency(): CapabilityDependencyBinding<PhoneClient> {
+  return {
+    descriptor: {
+      capability_id: CAPABILITY_ID,
+      descriptor_version: DESCRIPTOR_VERSION,
+      operations: ["password_login", "set_password", "start_otp", "verify_otp"],
+      stream_operations: [],
+      event_operations: [],
+    },
+    createClient(invoke) {
+      return {
+      async password_login(request, context) {
+        let payload: unknown;
+        try {
+          payload = JSON.parse(encodePasswordLoginRequest(request)) as unknown;
+        } catch (error) {
+          return { ok: false, error: { kind: "runtime", error: { kind: "protocol_violation", detail: dependencyErrorMessage(error) } } };
+        }
+        const call = context ?? { requestId: "0" as Uint64, cancelled: false };
+        try {
+          const outcome = await invoke("password_login", call, payload);
+          if (outcome.kind === "success") {
+            return { ok: true, value: decodePasswordLoginResponse(JSON.stringify(outcome.value)) };
+          }
+          if (outcome.kind === "domain") {
+            return { ok: false, error: { kind: "domain", error: decodePasswordLoginError(JSON.stringify(outcome.value)) } };
+          }
+          return { ok: false, error: { kind: "runtime", error: outcome.failure } };
+        } catch (error) {
+          return { ok: false, error: { kind: "runtime", error: { kind: "plugin_failure", detail: dependencyErrorMessage(error) } } };
+        }
+      },
+      async set_password(request, context) {
+        let payload: unknown;
+        try {
+          payload = JSON.parse(encodeSetPasswordRequest(request)) as unknown;
+        } catch (error) {
+          return { ok: false, error: { kind: "runtime", error: { kind: "protocol_violation", detail: dependencyErrorMessage(error) } } };
+        }
+        const call = context ?? { requestId: "0" as Uint64, cancelled: false };
+        try {
+          const outcome = await invoke("set_password", call, payload);
+          if (outcome.kind === "success") {
+            return { ok: true, value: decodeSetPasswordResponse(JSON.stringify(outcome.value)) };
+          }
+          if (outcome.kind === "domain") {
+            return { ok: false, error: { kind: "domain", error: decodeSetPasswordError(JSON.stringify(outcome.value)) } };
+          }
+          return { ok: false, error: { kind: "runtime", error: outcome.failure } };
+        } catch (error) {
+          return { ok: false, error: { kind: "runtime", error: { kind: "plugin_failure", detail: dependencyErrorMessage(error) } } };
+        }
+      },
+      async start_otp(request, context) {
+        let payload: unknown;
+        try {
+          payload = JSON.parse(encodeStartOtpRequest(request)) as unknown;
+        } catch (error) {
+          return { ok: false, error: { kind: "runtime", error: { kind: "protocol_violation", detail: dependencyErrorMessage(error) } } };
+        }
+        const call = context ?? { requestId: "0" as Uint64, cancelled: false };
+        try {
+          const outcome = await invoke("start_otp", call, payload);
+          if (outcome.kind === "success") {
+            return { ok: true, value: decodeStartOtpResponse(JSON.stringify(outcome.value)) };
+          }
+          if (outcome.kind === "domain") {
+            return { ok: false, error: { kind: "domain", error: decodeStartOtpError(JSON.stringify(outcome.value)) } };
+          }
+          return { ok: false, error: { kind: "runtime", error: outcome.failure } };
+        } catch (error) {
+          return { ok: false, error: { kind: "runtime", error: { kind: "plugin_failure", detail: dependencyErrorMessage(error) } } };
+        }
+      },
+      async verify_otp(request, context) {
+        let payload: unknown;
+        try {
+          payload = JSON.parse(encodeVerifyOtpRequest(request)) as unknown;
+        } catch (error) {
+          return { ok: false, error: { kind: "runtime", error: { kind: "protocol_violation", detail: dependencyErrorMessage(error) } } };
+        }
+        const call = context ?? { requestId: "0" as Uint64, cancelled: false };
+        try {
+          const outcome = await invoke("verify_otp", call, payload);
+          if (outcome.kind === "success") {
+            return { ok: true, value: decodeVerifyOtpResponse(JSON.stringify(outcome.value)) };
+          }
+          if (outcome.kind === "domain") {
+            return { ok: false, error: { kind: "domain", error: decodeVerifyOtpError(JSON.stringify(outcome.value)) } };
+          }
+          return { ok: false, error: { kind: "runtime", error: outcome.failure } };
+        } catch (error) {
+          return { ok: false, error: { kind: "runtime", error: { kind: "plugin_failure", detail: dependencyErrorMessage(error) } } };
+        }
+      },
+      };
+    },
+  };
+}
+
+export const bindDependency = bindPhoneDependency;
 
 export const portableValueProfile = lensoContractRuntime.portableValueProfile;

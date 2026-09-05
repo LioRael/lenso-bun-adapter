@@ -3,6 +3,7 @@ import * as lensoContractRuntime from "@lenso/contract-runtime";
 
 export const CAPABILITY_ID = "lenso.agent.tools@1";
 export const DESCRIPTOR_VERSION = "1.0.0";
+export const DESCRIPTOR_DIGEST = "sha256:cce8d9a6b3ba3fbe02e0fee42b86f40b43f0b821b9011e3101d6a6e6ed50d761";
 export const PORTABLE = true;
 export const CROSS_LANE_TRANSFER = false;
 
@@ -17,6 +18,14 @@ export type RuntimeFailure = lensoContractRuntime.RuntimeFailure;
 export type UnknownDomainError = lensoContractRuntime.UnknownDomainError;
 export type StreamEvent<Message, DomainError> = lensoContractRuntime.StreamEvent<Message, DomainError>;
 export type StreamSession<Message, DomainError> = lensoContractRuntime.StreamSession<Message, DomainError>;
+
+export interface CapabilityContractReference<Client> extends CapabilityDependencyBinding<Client> {
+  readonly capability_id: string;
+  readonly descriptor_version: string;
+  readonly descriptor_digest: string;
+  readonly generated_client: string;
+  readonly __client?: Client;
+}
 
 export interface CatalogRequest {
 
@@ -79,6 +88,8 @@ export interface ToolsProvider {
   catalog(context: InvocationContext, request: CatalogRequest): Promise<CatalogResult>;
   execute(context: InvocationContext, request: ExecuteRequest): Promise<ExecuteResult>;
 }
+
+export const TOOLS_CONTRACT: CapabilityContractReference<ToolsClient> = { ...bindToolsDependency(), capability_id: CAPABILITY_ID, descriptor_version: DESCRIPTOR_VERSION, descriptor_digest: DESCRIPTOR_DIGEST, generated_client: "ToolsClient" };
 
 export type ProviderDispatchOutcome =
   | { readonly kind: "success"; readonly value: unknown }
@@ -168,5 +179,80 @@ export function bindToolsProvider(
 
 export type Provider = ToolsProvider;
 export const bindProvider = bindToolsProvider;
+
+export type DependencyInvoker = (
+  operation: string,
+  context: InvocationContext,
+  payload: unknown,
+) => Promise<ProviderDispatchOutcome>;
+
+export interface CapabilityDependencyBinding<Client> {
+  readonly descriptor: CapabilityProviderDescriptor;
+  createClient(invoke: DependencyInvoker): Client;
+}
+
+function dependencyErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+export function bindToolsDependency(): CapabilityDependencyBinding<ToolsClient> {
+  return {
+    descriptor: {
+      capability_id: CAPABILITY_ID,
+      descriptor_version: DESCRIPTOR_VERSION,
+      operations: ["catalog", "execute"],
+      stream_operations: [],
+      event_operations: [],
+    },
+    createClient(invoke) {
+      return {
+      async catalog(request, context) {
+        let payload: unknown;
+        try {
+          payload = JSON.parse(encodeCatalogRequest(request)) as unknown;
+        } catch (error) {
+          return { ok: false, error: { kind: "runtime", error: { kind: "protocol_violation", detail: dependencyErrorMessage(error) } } };
+        }
+        const call = context ?? { requestId: "0" as Uint64, cancelled: false };
+        try {
+          const outcome = await invoke("catalog", call, payload);
+          if (outcome.kind === "success") {
+            return { ok: true, value: decodeCatalogResponse(JSON.stringify(outcome.value)) };
+          }
+          if (outcome.kind === "domain") {
+            return { ok: false, error: { kind: "domain", error: decodeCatalogError(JSON.stringify(outcome.value)) } };
+          }
+          return { ok: false, error: { kind: "runtime", error: outcome.failure } };
+        } catch (error) {
+          return { ok: false, error: { kind: "runtime", error: { kind: "plugin_failure", detail: dependencyErrorMessage(error) } } };
+        }
+      },
+      async execute(request, context) {
+        let payload: unknown;
+        try {
+          payload = JSON.parse(encodeExecuteRequest(request)) as unknown;
+        } catch (error) {
+          return { ok: false, error: { kind: "runtime", error: { kind: "protocol_violation", detail: dependencyErrorMessage(error) } } };
+        }
+        const call = context ?? { requestId: "0" as Uint64, cancelled: false };
+        try {
+          const outcome = await invoke("execute", call, payload);
+          if (outcome.kind === "success") {
+            return { ok: true, value: decodeExecuteResponse(JSON.stringify(outcome.value)) };
+          }
+          if (outcome.kind === "domain") {
+            return { ok: false, error: { kind: "domain", error: decodeExecuteError(JSON.stringify(outcome.value)) } };
+          }
+          return { ok: false, error: { kind: "runtime", error: outcome.failure } };
+        } catch (error) {
+          return { ok: false, error: { kind: "runtime", error: { kind: "plugin_failure", detail: dependencyErrorMessage(error) } } };
+        }
+      },
+      };
+    },
+  };
+}
+
+export const bindDependency = bindToolsDependency;
 
 export const portableValueProfile = lensoContractRuntime.portableValueProfile;

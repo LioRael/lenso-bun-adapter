@@ -6,6 +6,8 @@
 //! contract.
 
 mod adapter;
+mod adapter_v2;
+mod authoring_v2;
 mod host_imports;
 mod protocol;
 mod request;
@@ -13,6 +15,10 @@ mod server;
 mod transport;
 
 pub use adapter::{BunAdapter, BunAdapterConfig, BunCapabilityCodec, BunWire};
+pub use authoring_v2::{
+    BUN_AUTHORING_CALLBACK_PROOF_HEADER, BUN_AUTHORING_RUNTIME_PROFILE, BunAuthoringCallback,
+    BunAuthoringHost,
+};
 pub use protocol::{
     BunInvocationExtension, DEFAULT_MAX_FRAME_BYTES, DEFAULT_REQUEST_QUEUE_CAPACITY,
     PROTOCOL_VERSION,

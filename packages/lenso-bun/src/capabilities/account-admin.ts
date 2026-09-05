@@ -3,6 +3,7 @@ import * as lensoContractRuntime from "@lenso/contract-runtime";
 
 export const CAPABILITY_ID = "lenso.auth.account-admin@1";
 export const DESCRIPTOR_VERSION = "1.0.0";
+export const DESCRIPTOR_DIGEST = "sha256:fa2514ed403327d8dbba88787e0cec1233c289656c6d93cb9bf225b0708af49b";
 export const PORTABLE = true;
 export const CROSS_LANE_TRANSFER = true;
 
@@ -17,6 +18,14 @@ export type RuntimeFailure = lensoContractRuntime.RuntimeFailure;
 export type UnknownDomainError = lensoContractRuntime.UnknownDomainError;
 export type StreamEvent<Message, DomainError> = lensoContractRuntime.StreamEvent<Message, DomainError>;
 export type StreamSession<Message, DomainError> = lensoContractRuntime.StreamSession<Message, DomainError>;
+
+export interface CapabilityContractReference<Client> extends CapabilityDependencyBinding<Client> {
+  readonly capability_id: string;
+  readonly descriptor_version: string;
+  readonly descriptor_digest: string;
+  readonly generated_client: string;
+  readonly __client?: Client;
+}
 
 export interface ListSessionsRequest {
   cursor: string | null;
@@ -110,6 +119,8 @@ export interface AccountAdminProvider {
   list_subjects(context: InvocationContext, request: ListSubjectsRequest): Promise<ListSubjectsResult>;
   set_subject_status(context: InvocationContext, request: SetSubjectStatusRequest): Promise<SetSubjectStatusResult>;
 }
+
+export const ACCOUNT_ADMIN_CONTRACT: CapabilityContractReference<AccountAdminClient> = { ...bindAccountAdminDependency(), capability_id: CAPABILITY_ID, descriptor_version: DESCRIPTOR_VERSION, descriptor_digest: DESCRIPTOR_DIGEST, generated_client: "AccountAdminClient" };
 
 export type ProviderDispatchOutcome =
   | { readonly kind: "success"; readonly value: unknown }
@@ -219,5 +230,101 @@ export function bindAccountAdminProvider(
 
 export type Provider = AccountAdminProvider;
 export const bindProvider = bindAccountAdminProvider;
+
+export type DependencyInvoker = (
+  operation: string,
+  context: InvocationContext,
+  payload: unknown,
+) => Promise<ProviderDispatchOutcome>;
+
+export interface CapabilityDependencyBinding<Client> {
+  readonly descriptor: CapabilityProviderDescriptor;
+  createClient(invoke: DependencyInvoker): Client;
+}
+
+function dependencyErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+export function bindAccountAdminDependency(): CapabilityDependencyBinding<AccountAdminClient> {
+  return {
+    descriptor: {
+      capability_id: CAPABILITY_ID,
+      descriptor_version: DESCRIPTOR_VERSION,
+      operations: ["list_sessions", "list_subjects", "set_subject_status"],
+      stream_operations: [],
+      event_operations: [],
+    },
+    createClient(invoke) {
+      return {
+      async list_sessions(request, context) {
+        let payload: unknown;
+        try {
+          payload = JSON.parse(encodeListSessionsRequest(request)) as unknown;
+        } catch (error) {
+          return { ok: false, error: { kind: "runtime", error: { kind: "protocol_violation", detail: dependencyErrorMessage(error) } } };
+        }
+        const call = context ?? { requestId: "0" as Uint64, cancelled: false };
+        try {
+          const outcome = await invoke("list_sessions", call, payload);
+          if (outcome.kind === "success") {
+            return { ok: true, value: decodeListSessionsResponse(JSON.stringify(outcome.value)) };
+          }
+          if (outcome.kind === "domain") {
+            return { ok: false, error: { kind: "domain", error: decodeListSessionsError(JSON.stringify(outcome.value)) } };
+          }
+          return { ok: false, error: { kind: "runtime", error: outcome.failure } };
+        } catch (error) {
+          return { ok: false, error: { kind: "runtime", error: { kind: "plugin_failure", detail: dependencyErrorMessage(error) } } };
+        }
+      },
+      async list_subjects(request, context) {
+        let payload: unknown;
+        try {
+          payload = JSON.parse(encodeListSubjectsRequest(request)) as unknown;
+        } catch (error) {
+          return { ok: false, error: { kind: "runtime", error: { kind: "protocol_violation", detail: dependencyErrorMessage(error) } } };
+        }
+        const call = context ?? { requestId: "0" as Uint64, cancelled: false };
+        try {
+          const outcome = await invoke("list_subjects", call, payload);
+          if (outcome.kind === "success") {
+            return { ok: true, value: decodeListSubjectsResponse(JSON.stringify(outcome.value)) };
+          }
+          if (outcome.kind === "domain") {
+            return { ok: false, error: { kind: "domain", error: decodeListSubjectsError(JSON.stringify(outcome.value)) } };
+          }
+          return { ok: false, error: { kind: "runtime", error: outcome.failure } };
+        } catch (error) {
+          return { ok: false, error: { kind: "runtime", error: { kind: "plugin_failure", detail: dependencyErrorMessage(error) } } };
+        }
+      },
+      async set_subject_status(request, context) {
+        let payload: unknown;
+        try {
+          payload = JSON.parse(encodeSetSubjectStatusRequest(request)) as unknown;
+        } catch (error) {
+          return { ok: false, error: { kind: "runtime", error: { kind: "protocol_violation", detail: dependencyErrorMessage(error) } } };
+        }
+        const call = context ?? { requestId: "0" as Uint64, cancelled: false };
+        try {
+          const outcome = await invoke("set_subject_status", call, payload);
+          if (outcome.kind === "success") {
+            return { ok: true, value: decodeSetSubjectStatusResponse(JSON.stringify(outcome.value)) };
+          }
+          if (outcome.kind === "domain") {
+            return { ok: false, error: { kind: "domain", error: decodeSetSubjectStatusError(JSON.stringify(outcome.value)) } };
+          }
+          return { ok: false, error: { kind: "runtime", error: outcome.failure } };
+        } catch (error) {
+          return { ok: false, error: { kind: "runtime", error: { kind: "plugin_failure", detail: dependencyErrorMessage(error) } } };
+        }
+      },
+      };
+    },
+  };
+}
+
+export const bindDependency = bindAccountAdminDependency;
 
 export const portableValueProfile = lensoContractRuntime.portableValueProfile;

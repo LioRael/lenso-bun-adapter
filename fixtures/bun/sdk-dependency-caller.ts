@@ -1,5 +1,6 @@
 import {
   definePlugin,
+  dependency,
   type CapabilityDependencyBinding,
   type ProviderDispatchOutcome,
 } from "@lenso/bun-plugin";
@@ -17,11 +18,13 @@ type ProxyClient = {
   greet(payload: unknown, context: InvocationContext): Promise<ProviderDispatchOutcome>;
 };
 
-const target: CapabilityDependencyBinding<ProxyClient> = {
+const targetContract: CapabilityDependencyBinding<ProxyClient> = {
   descriptor: proxy,
   createClient: (invoke) => ({
     greet: (payload, context) => invoke("greet", context, payload),
   }),
 };
+
+const target = dependency({ id: "target", contract: targetContract });
 
 export default definePlugin({ dependencies: { target }, providers: [] });

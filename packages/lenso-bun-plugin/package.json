@@ -15,6 +15,16 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "default": "./dist/index.js"
+    },
+    "./build": {
+      "types": "./dist/build.d.ts",
+      "import": "./dist/build.js",
+      "default": "./dist/build.js"
+    },
+    "./extract": {
+      "types": "./dist/extract.d.ts",
+      "import": "./dist/extract.js",
+      "default": "./dist/extract.js"
     }
   },
   "main": "./dist/index.js",
@@ -26,17 +36,18 @@
     "README.md"
   ],
   "scripts": {
-    "build": "node scripts/clean-dist.mjs && bun build src/index.ts --target=bun --format=esm --outdir=dist --entry-naming='[name].js' && tsc -p tsconfig.build.json",
+    "build": "node scripts/clean-dist.mjs && bun build src/index.ts src/build.ts src/extract.ts --target=bun --format=esm --outdir=dist --entry-naming='[name].js' --external 'typescript/*' && tsc -p tsconfig.build.json",
     "prepack": "bun run build",
     "smoke": "bun test test/package.test.ts",
     "test": "bun test test"
   },
   "dependencies": {
-    "@lenso/contract-runtime": "0.2.0"
+    "@lenso/contract-runtime": "0.3.0",
+    "@lenso/process-protocol": "0.2.1",
+    "typescript": "7.0.2"
   },
   "devDependencies": {
-    "@types/bun": "1.4.0",
-    "typescript": "7.0.2"
+    "@types/bun": "1.4.0"
   },
   "publishConfig": {
     "access": "public",

@@ -3,6 +3,7 @@ import * as lensoContractRuntime from "@lenso/contract-runtime";
 
 export const CAPABILITY_ID = "lenso.auth.anonymous@1";
 export const DESCRIPTOR_VERSION = "1.0.0";
+export const DESCRIPTOR_DIGEST = "sha256:bf5c4509c831964f4be6c5a0993b031022f7d478e8bd15ad4b65f3efc2eec72d";
 export const PORTABLE = true;
 export const CROSS_LANE_TRANSFER = true;
 
@@ -17,6 +18,14 @@ export type RuntimeFailure = lensoContractRuntime.RuntimeFailure;
 export type UnknownDomainError = lensoContractRuntime.UnknownDomainError;
 export type StreamEvent<Message, DomainError> = lensoContractRuntime.StreamEvent<Message, DomainError>;
 export type StreamSession<Message, DomainError> = lensoContractRuntime.StreamSession<Message, DomainError>;
+
+export interface CapabilityContractReference<Client> extends CapabilityDependencyBinding<Client> {
+  readonly capability_id: string;
+  readonly descriptor_version: string;
+  readonly descriptor_digest: string;
+  readonly generated_client: string;
+  readonly __client?: Client;
+}
 
 export interface SignInRequest {
   device_id: string | null;
@@ -48,6 +57,8 @@ export interface AnonymousClient {
 export interface AnonymousProvider {
   sign_in(context: InvocationContext, request: SignInRequest): Promise<SignInResult>;
 }
+
+export const ANONYMOUS_CONTRACT: CapabilityContractReference<AnonymousClient> = { ...bindAnonymousDependency(), capability_id: CAPABILITY_ID, descriptor_version: DESCRIPTOR_VERSION, descriptor_digest: DESCRIPTOR_DIGEST, generated_client: "AnonymousClient" };
 
 export type ProviderDispatchOutcome =
   | { readonly kind: "success"; readonly value: unknown }
@@ -117,5 +128,59 @@ export function bindAnonymousProvider(
 
 export type Provider = AnonymousProvider;
 export const bindProvider = bindAnonymousProvider;
+
+export type DependencyInvoker = (
+  operation: string,
+  context: InvocationContext,
+  payload: unknown,
+) => Promise<ProviderDispatchOutcome>;
+
+export interface CapabilityDependencyBinding<Client> {
+  readonly descriptor: CapabilityProviderDescriptor;
+  createClient(invoke: DependencyInvoker): Client;
+}
+
+function dependencyErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+export function bindAnonymousDependency(): CapabilityDependencyBinding<AnonymousClient> {
+  return {
+    descriptor: {
+      capability_id: CAPABILITY_ID,
+      descriptor_version: DESCRIPTOR_VERSION,
+      operations: ["sign_in"],
+      stream_operations: [],
+      event_operations: [],
+    },
+    createClient(invoke) {
+      return {
+      async sign_in(request, context) {
+        let payload: unknown;
+        try {
+          payload = JSON.parse(encodeSignInRequest(request)) as unknown;
+        } catch (error) {
+          return { ok: false, error: { kind: "runtime", error: { kind: "protocol_violation", detail: dependencyErrorMessage(error) } } };
+        }
+        const call = context ?? { requestId: "0" as Uint64, cancelled: false };
+        try {
+          const outcome = await invoke("sign_in", call, payload);
+          if (outcome.kind === "success") {
+            return { ok: true, value: decodeSignInResponse(JSON.stringify(outcome.value)) };
+          }
+          if (outcome.kind === "domain") {
+            return { ok: false, error: { kind: "domain", error: decodeSignInError(JSON.stringify(outcome.value)) } };
+          }
+          return { ok: false, error: { kind: "runtime", error: outcome.failure } };
+        } catch (error) {
+          return { ok: false, error: { kind: "runtime", error: { kind: "plugin_failure", detail: dependencyErrorMessage(error) } } };
+        }
+      },
+      };
+    },
+  };
+}
+
+export const bindDependency = bindAnonymousDependency;
 
 export const portableValueProfile = lensoContractRuntime.portableValueProfile;

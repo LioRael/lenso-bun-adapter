@@ -3,6 +3,7 @@ import * as lensoContractRuntime from "@lenso/contract-runtime";
 
 export const CAPABILITY_ID = "lenso.auth.credential-issuer@1";
 export const DESCRIPTOR_VERSION = "1.0.0";
+export const DESCRIPTOR_DIGEST = "sha256:c7dfd679a0a3a534b9b1206ea4639163a0a8eae6eb5c9bc6e944efeee0560ac3";
 export const PORTABLE = true;
 export const CROSS_LANE_TRANSFER = true;
 
@@ -17,6 +18,14 @@ export type RuntimeFailure = lensoContractRuntime.RuntimeFailure;
 export type UnknownDomainError = lensoContractRuntime.UnknownDomainError;
 export type StreamEvent<Message, DomainError> = lensoContractRuntime.StreamEvent<Message, DomainError>;
 export type StreamSession<Message, DomainError> = lensoContractRuntime.StreamSession<Message, DomainError>;
+
+export interface CapabilityContractReference<Client> extends CapabilityDependencyBinding<Client> {
+  readonly capability_id: string;
+  readonly descriptor_version: string;
+  readonly descriptor_digest: string;
+  readonly generated_client: string;
+  readonly __client?: Client;
+}
 
 export interface IssueRequest {
   actor_kind: string;
@@ -71,6 +80,8 @@ export interface CredentialIssuerProvider {
   issue(context: InvocationContext, request: IssueRequest): Promise<IssueResult>;
   revoke(context: InvocationContext, request: RevokeRequest): Promise<RevokeResult>;
 }
+
+export const CREDENTIAL_ISSUER_CONTRACT: CapabilityContractReference<CredentialIssuerClient> = { ...bindCredentialIssuerDependency(), capability_id: CAPABILITY_ID, descriptor_version: DESCRIPTOR_VERSION, descriptor_digest: DESCRIPTOR_DIGEST, generated_client: "CredentialIssuerClient" };
 
 export type ProviderDispatchOutcome =
   | { readonly kind: "success"; readonly value: unknown }
@@ -160,5 +171,80 @@ export function bindCredentialIssuerProvider(
 
 export type Provider = CredentialIssuerProvider;
 export const bindProvider = bindCredentialIssuerProvider;
+
+export type DependencyInvoker = (
+  operation: string,
+  context: InvocationContext,
+  payload: unknown,
+) => Promise<ProviderDispatchOutcome>;
+
+export interface CapabilityDependencyBinding<Client> {
+  readonly descriptor: CapabilityProviderDescriptor;
+  createClient(invoke: DependencyInvoker): Client;
+}
+
+function dependencyErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+export function bindCredentialIssuerDependency(): CapabilityDependencyBinding<CredentialIssuerClient> {
+  return {
+    descriptor: {
+      capability_id: CAPABILITY_ID,
+      descriptor_version: DESCRIPTOR_VERSION,
+      operations: ["issue", "revoke"],
+      stream_operations: [],
+      event_operations: [],
+    },
+    createClient(invoke) {
+      return {
+      async issue(request, context) {
+        let payload: unknown;
+        try {
+          payload = JSON.parse(encodeIssueRequest(request)) as unknown;
+        } catch (error) {
+          return { ok: false, error: { kind: "runtime", error: { kind: "protocol_violation", detail: dependencyErrorMessage(error) } } };
+        }
+        const call = context ?? { requestId: "0" as Uint64, cancelled: false };
+        try {
+          const outcome = await invoke("issue", call, payload);
+          if (outcome.kind === "success") {
+            return { ok: true, value: decodeIssueResponse(JSON.stringify(outcome.value)) };
+          }
+          if (outcome.kind === "domain") {
+            return { ok: false, error: { kind: "domain", error: decodeIssueError(JSON.stringify(outcome.value)) } };
+          }
+          return { ok: false, error: { kind: "runtime", error: outcome.failure } };
+        } catch (error) {
+          return { ok: false, error: { kind: "runtime", error: { kind: "plugin_failure", detail: dependencyErrorMessage(error) } } };
+        }
+      },
+      async revoke(request, context) {
+        let payload: unknown;
+        try {
+          payload = JSON.parse(encodeRevokeRequest(request)) as unknown;
+        } catch (error) {
+          return { ok: false, error: { kind: "runtime", error: { kind: "protocol_violation", detail: dependencyErrorMessage(error) } } };
+        }
+        const call = context ?? { requestId: "0" as Uint64, cancelled: false };
+        try {
+          const outcome = await invoke("revoke", call, payload);
+          if (outcome.kind === "success") {
+            return { ok: true, value: decodeRevokeResponse(JSON.stringify(outcome.value)) };
+          }
+          if (outcome.kind === "domain") {
+            return { ok: false, error: { kind: "domain", error: decodeRevokeError(JSON.stringify(outcome.value)) } };
+          }
+          return { ok: false, error: { kind: "runtime", error: outcome.failure } };
+        } catch (error) {
+          return { ok: false, error: { kind: "runtime", error: { kind: "plugin_failure", detail: dependencyErrorMessage(error) } } };
+        }
+      },
+      };
+    },
+  };
+}
+
+export const bindDependency = bindCredentialIssuerDependency;
 
 export const portableValueProfile = lensoContractRuntime.portableValueProfile;

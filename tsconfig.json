@@ -17,5 +17,8 @@
     "packages/lenso-bun/test/**/*.ts",
     "packages/lenso-bun-plugin/src/**/*.ts",
     "packages/lenso-bun-plugin/test/**/*.ts"
+  ],
+  "exclude": [
+    "packages/lenso-bun-plugin/test/fixtures/extraction/**/*.ts"
   ]
 }

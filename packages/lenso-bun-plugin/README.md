@@ -80,10 +80,11 @@ return any complete object used by Provider handlers. `stop` runs at most once
 during managed shutdown.
 
 ```ts
+import { configuration, definePlugin } from "@lenso/bun-plugin";
+
 export default definePlugin({
   dependencies: { store: storeDependency },
-  configurationSchema: NotesConfig.schema,
-  decodeConfig: NotesConfig.parse,
+  config: configuration(NotesConfig.schema, NotesConfig.parse),
   async create({ config, dependencies }) {
     return { config, store: dependencies.store, cache: new Map() };
   },
@@ -112,3 +113,59 @@ The current public surface supports request Capabilities over the production
 JSON-RPC loopback wire. Framed stdio remains a conformance and benchmark wire,
 not an authoring surface. Stream and Event descriptors are rejected until their
 typed SDK sessions are available rather than silently exposing partial support.
+
+## One object with named dependencies
+
+Runtime profile V2 constructs one object for each admitted Plugin instance.
+Generated dependency bindings create typed clients; the Plugin names each input
+once and never selects a provider instance or route itself.
+
+```ts
+import {
+  definePlugin,
+  dependency,
+  provider,
+} from "@lenso/bun-plugin";
+import { bindDependency as store } from "./generated/store.ts";
+import { bindProvider } from "./generated/greeting.ts";
+
+const greeting = {
+  capability_id: "example.greeting@1",
+  descriptor_version: "1.0.0",
+  operations: ["greet"],
+  stream_operations: [],
+  event_operations: [],
+} as const;
+
+export default definePlugin({
+  dependencies: {
+    source: dependency({ id: "source", contract: store() }),
+  },
+  async create({ dependencies }) {
+    return {
+      source: dependencies.source,
+      requests: 0,
+      async greet(_context, request) {
+        this.requests += 1;
+        return {
+          ok: true,
+          value: { message: await this.source.get(request.name) },
+        };
+      },
+    };
+  },
+  providers: [provider(greeting, bindProvider)],
+  async stop(instance, lifecycle) {
+    if (lifecycle.remainingTimeoutMs() > 0) {
+      await instance.source.flush();
+    }
+  },
+});
+```
+
+Omit `create` to receive a fresh object containing the declared `config` and
+`dependencies`. Use `cardinality: "optional"` for `Client | undefined`, or
+`cardinality: "many"` for an immutable list of clients paired with provider
+identities. `LifecycleContext` supplies only cancellation and the remaining
+Host budget. Agent packages may lower their own `tools` declarations into an
+ordinary Capability provider; `tools` is not a generic Plugin option.

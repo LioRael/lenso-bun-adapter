@@ -46,7 +46,7 @@
   },
   "dependencies": {
     "@lenso/bun-plugin": "0.2.1",
-    "@lenso/contract-runtime": "0.2.0"
+    "@lenso/contract-runtime": "0.3.0"
   },
   "devDependencies": {
     "@types/bun": "1.4.0",

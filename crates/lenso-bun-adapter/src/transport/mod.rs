@@ -685,7 +685,7 @@ fn remember_request_id(ids: &Mutex<BTreeSet<u64>>, request_id: u64) {
     }
 }
 
-fn build_json_rpc_client(
+pub(crate) fn build_json_rpc_client(
     address: SocketAddr,
     max_frame_bytes: usize,
     max_concurrent_requests: usize,
@@ -702,7 +702,7 @@ fn build_json_rpc_client(
         })
 }
 
-fn json_rpc_runtime() -> Result<tokio::runtime::Runtime, RuntimeFailure> {
+pub(crate) fn json_rpc_runtime() -> Result<tokio::runtime::Runtime, RuntimeFailure> {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
