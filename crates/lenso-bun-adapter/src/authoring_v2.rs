@@ -23,9 +23,10 @@ use lenso_process_protocol::{
     authoring::{
         CancelAck, CancelParams, ConstructParams, ConstructedResult, EventPublishParams,
         EventPublishResult, InitializeParams, InvocationResult, InvokeParams, OutboundCallParams,
-        OutboundCallResult, Settlement, StopParams, StoppedResult, StreamActionResult,
-        StreamCancelParams, StreamCloseSendParams, StreamOpenParams, StreamOpenResult,
-        StreamReceiveParams, StreamReceiveResult, StreamSendParams,
+        OutboundCallResult, OutboundEventPublishParams, OutboundEventPublishResult,
+        OutboundStreamOpenParams, OutboundStreamOpenResult, Settlement, StopParams, StoppedResult,
+        StreamActionResult, StreamCancelParams, StreamCloseSendParams, StreamOpenParams,
+        StreamOpenResult, StreamReceiveParams, StreamReceiveResult, StreamSendParams,
     },
     authoring_callback_proof_message, authoring_child_proof_message,
     authoring_handshake_proof_payload, authoring_host_proof_message,
@@ -46,7 +47,47 @@ type HmacSha256 = Hmac<Sha256>;
 /// Host-side dispatch for authenticated child dependency calls and settlement observations.
 pub trait BunAuthoringCallback: std::fmt::Debug + Send + Sync + 'static {
     fn call(&self, params: OutboundCallParams) -> Result<OutboundCallResult, RuntimeFailure>;
+    fn publish_event(
+        &self,
+        params: OutboundEventPublishParams,
+    ) -> Result<OutboundEventPublishResult, RuntimeFailure> {
+        Err(unsupported_callback(params.operation))
+    }
+    fn open_stream(
+        &self,
+        params: OutboundStreamOpenParams,
+    ) -> Result<OutboundStreamOpenResult, RuntimeFailure> {
+        Err(unsupported_callback(params.operation))
+    }
+    fn send_stream(&self, _params: StreamSendParams) -> Result<StreamActionResult, RuntimeFailure> {
+        Err(unsupported_callback("stream.send"))
+    }
+    fn receive_stream(
+        &self,
+        _params: StreamReceiveParams,
+    ) -> Result<StreamReceiveResult, RuntimeFailure> {
+        Err(unsupported_callback("stream.receive"))
+    }
+    fn close_stream_send(
+        &self,
+        _params: StreamCloseSendParams,
+    ) -> Result<StreamActionResult, RuntimeFailure> {
+        Err(unsupported_callback("stream.close_send"))
+    }
+    fn cancel_stream(
+        &self,
+        _params: StreamCancelParams,
+    ) -> Result<StreamActionResult, RuntimeFailure> {
+        Err(unsupported_callback("stream.cancel"))
+    }
     fn settled(&self, settlement: Settlement) -> Result<(), RuntimeFailure>;
+}
+
+fn unsupported_callback(operation: impl Into<String>) -> RuntimeFailure {
+    RuntimeFailure::UnknownOperation {
+        capability: BUN_AUTHORING_RUNTIME_PROFILE,
+        operation: operation.into(),
+    }
 }
 
 /// One authenticated Bun Authoring V2 child and its Host callback listener.
@@ -528,7 +569,14 @@ fn dispatch_callback(
         return Err("invalid JSON-RPC version".to_owned());
     }
     let method = match request.method.as_str() {
-        "lenso.call" | "lenso.settled" => request.method.as_str(),
+        "lenso.call"
+        | "lenso.event.publish"
+        | "lenso.stream.open"
+        | "lenso.stream.send"
+        | "lenso.stream.receive"
+        | "lenso.stream.close_send"
+        | "lenso.stream.cancel"
+        | "lenso.settled" => request.method.as_str(),
         _ => return Err("unsupported Bun Authoring callback method".to_owned()),
     };
     let received = headers
@@ -545,16 +593,61 @@ fn dispatch_callback(
             if params.session != state.session {
                 return Err("callback session mismatch".to_owned());
             }
-            let result = serde_json::to_value(state.handler.call(params).map_err(runtime_detail)?)
-                .map_err(|error| error.to_string())?;
-            if serde_json::to_vec(&result)
-                .map_err(|error| error.to_string())?
-                .len()
-                > state.max_frame_bytes
-            {
-                return Err("Bun Authoring callback result exceeds max_frame_bytes".to_owned());
-            }
-            Ok(result)
+            bounded_callback_result(state, state.handler.call(params).map_err(runtime_detail)?)
+        }
+        "lenso.event.publish" => {
+            let params = callback_params::<OutboundEventPublishParams>(state, request)?;
+            bounded_callback_result(
+                state,
+                state
+                    .handler
+                    .publish_event(params)
+                    .map_err(runtime_detail)?,
+            )
+        }
+        "lenso.stream.open" => {
+            let params = callback_params::<OutboundStreamOpenParams>(state, request)?;
+            bounded_callback_result(
+                state,
+                state.handler.open_stream(params).map_err(runtime_detail)?,
+            )
+        }
+        "lenso.stream.send" => {
+            let params = callback_params::<StreamSendParams>(state, request)?;
+            bounded_callback_result(
+                state,
+                state.handler.send_stream(params).map_err(runtime_detail)?,
+            )
+        }
+        "lenso.stream.receive" => {
+            let params = callback_params::<StreamReceiveParams>(state, request)?;
+            bounded_callback_result(
+                state,
+                state
+                    .handler
+                    .receive_stream(params)
+                    .map_err(runtime_detail)?,
+            )
+        }
+        "lenso.stream.close_send" => {
+            let params = callback_params::<StreamCloseSendParams>(state, request)?;
+            bounded_callback_result(
+                state,
+                state
+                    .handler
+                    .close_stream_send(params)
+                    .map_err(runtime_detail)?,
+            )
+        }
+        "lenso.stream.cancel" => {
+            let params = callback_params::<StreamCancelParams>(state, request)?;
+            bounded_callback_result(
+                state,
+                state
+                    .handler
+                    .cancel_stream(params)
+                    .map_err(runtime_detail)?,
+            )
         }
         "lenso.settled" => {
             let settlement: Settlement = serde_json::from_value(request.params.clone())
@@ -567,6 +660,49 @@ fn dispatch_callback(
         }
         _ => unreachable!(),
     }
+}
+
+fn callback_params<T>(state: &CallbackState, request: &RpcRequest) -> Result<T, String>
+where
+    T: CallbackSession + DeserializeOwned,
+{
+    let params: T =
+        serde_json::from_value(request.params.clone()).map_err(|error| error.to_string())?;
+    if params.session() != state.session {
+        return Err("callback session mismatch".to_owned());
+    }
+    Ok(params)
+}
+
+trait CallbackSession {
+    fn session(&self) -> &str;
+}
+
+macro_rules! callback_session {
+    ($($type:ty),+ $(,)?) => { $(
+        impl CallbackSession for $type {
+            fn session(&self) -> &str { &self.session }
+        }
+    )+ };
+}
+
+callback_session!(
+    OutboundEventPublishParams,
+    OutboundStreamOpenParams,
+    StreamSendParams,
+    StreamReceiveParams,
+);
+
+fn bounded_callback_result(state: &CallbackState, result: impl Serialize) -> Result<Value, String> {
+    let result = serde_json::to_value(result).map_err(|error| error.to_string())?;
+    if serde_json::to_vec(&result)
+        .map_err(|error| error.to_string())?
+        .len()
+        > state.max_frame_bytes
+    {
+        return Err("Bun Authoring callback result exceeds max_frame_bytes".to_owned());
+    }
+    Ok(result)
 }
 
 fn rpc<T: DeserializeOwned>(

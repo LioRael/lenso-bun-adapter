@@ -4,6 +4,8 @@ import type {
   CapabilityProviderBinding,
   CapabilityProviderDescriptor,
   ProviderDispatchOutcome,
+  ProviderEventPublishOutcome,
+  ProviderStreamOpenOutcome,
 } from "./index.js";
 
 /** A finite Host-owned scope used while constructing or stopping one instance. */
@@ -13,9 +15,12 @@ export interface LifecycleContext extends InvocationContext {
 }
 
 /** Runtime projection emitted beside a generated request Capability client. */
-export interface CapabilityDependencyBinding<Client> {
+export interface CapabilityDependencyBinding<
+  Client,
+  Runtime extends DependencyInvoker = DependencyInvoker,
+> {
   readonly descriptor: CapabilityProviderDescriptor;
-  createClient(invoke: DependencyInvoker): Client;
+  createClient(invoke: Runtime): Client;
 }
 
 export type DependencyInvoker = (
@@ -23,6 +28,21 @@ export type DependencyInvoker = (
   context: InvocationContext,
   payload: unknown,
 ) => Promise<ProviderDispatchOutcome>;
+
+/** @internal Host-backed interaction seam consumed by generated clients. */
+export type InteractionDependencyInvoker = DependencyInvoker & {
+  readonly providerInstance: string;
+  openStream(
+    operation: string,
+    context: InvocationContext,
+    payload: unknown,
+  ): Promise<ProviderStreamOpenOutcome>;
+  publishEvent(
+    operation: string,
+    context: InvocationContext,
+    payload: unknown,
+  ): Promise<ProviderEventPublishOutcome>;
+};
 
 export type DependencyCardinality = "one" | "optional" | "many";
 
@@ -37,7 +57,7 @@ export interface DependencyDeclaration<
 > {
   readonly kind: "lenso.dependency";
   readonly id?: string;
-  readonly contract: CapabilityDependencyBinding<Client>;
+  readonly contract: CapabilityDependencyBinding<Client, InteractionDependencyInvoker>;
   readonly cardinality: Cardinality;
 }
 
@@ -46,7 +66,7 @@ export function dependency<
   Cardinality extends DependencyCardinality = "one",
 >(options: {
   readonly id: string;
-  readonly contract: CapabilityDependencyBinding<Client>;
+  readonly contract: CapabilityDependencyBinding<Client, InteractionDependencyInvoker>;
   readonly cardinality?: Cardinality;
 }): DependencyDeclaration<Client, Cardinality> {
   if (options.id.length === 0) throw new Error("dependency id must not be empty");
@@ -101,7 +121,14 @@ export function provider<Instance extends object>(
 }
 
 export type DependencyDeclarations = Readonly<
-  Record<string, DependencyDeclaration<unknown, DependencyCardinality>>
+  // `any` deliberately erases generated client/runtime types at this
+  // structural boundary. `DependencyValue` recovers the client per property.
+  Record<string, {
+    readonly kind: "lenso.dependency";
+    readonly id?: string;
+    readonly contract: CapabilityDependencyBinding<any, any>;
+    readonly cardinality: DependencyCardinality;
+  }>
 >;
 
 type ConfigValue<Declaration> = Declaration extends ConfigDeclaration<infer Value>
@@ -109,7 +136,10 @@ type ConfigValue<Declaration> = Declaration extends ConfigDeclaration<infer Valu
   : never;
 
 type DependencyValue<Declaration> =
-  Declaration extends DependencyDeclaration<infer Client, infer Cardinality>
+  Declaration extends {
+    readonly contract: CapabilityDependencyBinding<infer Client, any>;
+    readonly cardinality: infer Cardinality;
+  }
     ? Cardinality extends "optional"
       ? Client | undefined
       : Cardinality extends "many"

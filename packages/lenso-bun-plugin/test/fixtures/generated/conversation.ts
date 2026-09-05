@@ -49,7 +49,7 @@ function lowerProviderStream<Message, DomainError>(stream: ProviderStream<Messag
   };
 }
 
-export interface CapabilityContractReference<Client, Provider extends object> {
+export interface CapabilityContractReference<Client, Provider extends object, Runtime extends DependencyInvoker = DependencyInvoker> extends CapabilityDependencyBinding<Client, Runtime> {
   readonly kind: "lenso.capability";
   readonly capability_id: string;
   readonly descriptor_version: string;
@@ -57,6 +57,9 @@ export interface CapabilityContractReference<Client, Provider extends object> {
   readonly generated_client: string;
   readonly descriptor: CapabilityProviderDescriptor;
   bindProvider(provider: Provider): CapabilityProviderBinding;
+  required(id?: string): CapabilityDependencyDeclaration<Client, "one", Runtime>;
+  optional(id?: string): CapabilityDependencyDeclaration<Client, "optional", Runtime>;
+  many(id?: string): CapabilityDependencyDeclaration<Client, "many", Runtime>;
   readonly __client?: Client;
   readonly __provider?: Provider;
 }
@@ -94,7 +97,7 @@ export interface ConversationProvider {
   chat(context: InvocationContext, request: ChatRequest): ChatProviderOutput;
 }
 
-export const Conversation: CapabilityContractReference<ConversationClient, ConversationProvider> = { kind: "lenso.capability", capability_id: CAPABILITY_ID, descriptor_version: DESCRIPTOR_VERSION, descriptor_digest: DESCRIPTOR_DIGEST, generated_client: "ConversationClient", descriptor: { capability_id: CAPABILITY_ID, descriptor_version: DESCRIPTOR_VERSION, operations: ["chat"], stream_operations: ["chat"], event_operations: [] }, bindProvider: bindConversationProvider, };
+export const Conversation: CapabilityContractReference<ConversationClient, ConversationProvider, InteractionDependencyInvoker> = { kind: "lenso.capability", ...bindConversationDependency(), capability_id: CAPABILITY_ID, descriptor_version: DESCRIPTOR_VERSION, descriptor_digest: DESCRIPTOR_DIGEST, generated_client: "ConversationClient", descriptor: { capability_id: CAPABILITY_ID, descriptor_version: DESCRIPTOR_VERSION, operations: ["chat"], stream_operations: ["chat"], event_operations: [] }, bindProvider: bindConversationProvider, required(id) { return { kind: "lenso.dependency", ...(id === undefined ? {} : { id }), contract: this, cardinality: "one" }; }, optional(id) { return { kind: "lenso.dependency", ...(id === undefined ? {} : { id }), contract: this, cardinality: "optional" }; }, many(id) { return { kind: "lenso.dependency", ...(id === undefined ? {} : { id }), contract: this, cardinality: "many" }; }, };
 export const CONVERSATION_CONTRACT = Conversation;
 
 export type ProviderDispatchOutcome =
@@ -257,5 +260,101 @@ export function bindConversationProvider(
 
 export type Provider = ConversationProvider;
 export const bindProvider = bindConversationProvider;
+
+export type DependencyInvoker = (
+  operation: string,
+  context: InvocationContext,
+  payload: unknown,
+) => Promise<ProviderDispatchOutcome>;
+
+export type InteractionDependencyInvoker = DependencyInvoker & {
+  readonly providerInstance: string;
+  openStream(operation: string, context: InvocationContext, payload: unknown): Promise<ProviderStreamOpenOutcome>;
+  publishEvent(operation: string, context: InvocationContext, payload: unknown): Promise<ProviderEventPublishOutcome>;
+};
+
+export interface CapabilityDependencyBinding<Client, Runtime extends DependencyInvoker = DependencyInvoker> {
+  readonly descriptor: CapabilityProviderDescriptor;
+  createClient(invoke: Runtime): Client;
+}
+
+export interface CapabilityDependencyDeclaration<Client, Cardinality extends "one" | "optional" | "many", Runtime extends DependencyInvoker = DependencyInvoker> {
+  readonly kind: "lenso.dependency";
+  readonly id?: string;
+  readonly contract: CapabilityDependencyBinding<Client, Runtime>;
+  readonly cardinality: Cardinality;
+}
+
+function dependencyErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function dependencyRuntimeError(failure: RuntimeFailure): Error {
+  return Object.assign(new Error(`Capability dependency failed: ${failure.kind}`), { failure });
+}
+
+function dependencyFailure(error: unknown): RuntimeFailure {
+  if (typeof error === "object" && error !== null && "failure" in error) return (error as { failure: RuntimeFailure }).failure;
+  return { kind: "plugin_failure", detail: dependencyErrorMessage(error) };
+}
+
+export function bindConversationDependency(): CapabilityDependencyBinding<ConversationClient, InteractionDependencyInvoker> {
+  return {
+    descriptor: {
+      capability_id: CAPABILITY_ID,
+      descriptor_version: DESCRIPTOR_VERSION,
+      operations: ["chat"],
+      stream_operations: ["chat"],
+      event_operations: [],
+    },
+    createClient(invoke) {
+      return {
+      async chat(request, context) {
+        let payload: unknown;
+        try {
+          payload = JSON.parse(encodeChatRequest(request)) as unknown;
+        } catch (error) {
+          return { ok: false, error: { kind: "runtime", error: { kind: "protocol_violation", detail: dependencyErrorMessage(error) } } };
+        }
+        const call = context ?? { requestId: "0" as Uint64, cancelled: false };
+        try {
+          const outcome = await invoke.openStream("chat", call, payload);
+          if (outcome.kind === "domain") {
+            return { ok: false, error: { kind: "domain", error: decodeChatError(JSON.stringify(outcome.value)) } };
+          }
+          if (outcome.kind === "runtime") {
+            return { ok: false, error: { kind: "runtime", error: outcome.failure } };
+          }
+          const stream = outcome.stream;
+          return { ok: true, value: {
+            async send(message) {
+              const encoded = JSON.parse(encodeChatResponse(message)) as unknown;
+              const result = await stream.send(encoded);
+              if (result.kind === "runtime") throw dependencyRuntimeError(result.failure);
+            },
+            async receive() {
+              const result = await stream.receive();
+              if (result.kind === "message") return { kind: "message", message: decodeChatResponse(JSON.stringify(result.value)) };
+              if (result.kind === "peer_half_closed") return { kind: "peer_half_closed" };
+              if (result.kind === "terminal_success") return { kind: "terminal", outcome: { ok: true } };
+              if (result.kind === "terminal_domain") return { kind: "terminal", outcome: { ok: false, error: decodeChatError(JSON.stringify(result.value)) } };
+              throw dependencyRuntimeError(result.failure);
+            },
+            async closeSend() {
+              const result = await stream.closeSend();
+              if (result.kind === "runtime") throw dependencyRuntimeError(result.failure);
+            },
+            cancel() { stream.cancel(); },
+          } };
+        } catch (error) {
+          return { ok: false, error: { kind: "runtime", error: dependencyFailure(error) } };
+        }
+      },
+      };
+    },
+  };
+}
+
+export const bindDependency = bindConversationDependency;
 
 export const portableValueProfile = lensoContractRuntime.portableValueProfile;

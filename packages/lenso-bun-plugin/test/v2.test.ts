@@ -14,6 +14,10 @@ import { BUN_AUTHORING_CALLBACK_PROOF_HEADER } from "../src/v2.ts";
 
 const fixture = new URL("./fixtures/v2-child.ts", import.meta.url).pathname;
 const blockingFixture = new URL("./fixtures/v2-blocking-child.ts", import.meta.url).pathname;
+const interactionDependenciesFixture = new URL(
+  "./fixtures/v2-interaction-dependencies-child.ts",
+  import.meta.url,
+).pathname;
 const STORE_ID = "example.document-store@1";
 const SYNC_ID = "example.sync@1";
 const VERSION = "1.0.0";
@@ -118,6 +122,82 @@ test("cancelled noncooperative work retains capacity until physical termination"
   void first.catch(() => {});
 });
 
+test("generated clients use exact Stream/Event routes with optional and many dependencies", async () => {
+  const session = randomValue();
+  const secret = randomValue();
+  const settlements: unknown[] = [];
+  const callbacks: Array<{ method: string; params: any }> = [];
+  const callback = interactionCallbackServer(secret, session, settlements, callbacks);
+  const child = await startChild(interactionDependenciesFixture, secret, callback.origin);
+  const initialize = interactionInitialization(session);
+  await initializeChild(child.origin, secret, callback.origin, initialize);
+  await rpc(child.origin, "lenso.construct", {
+    session,
+    lifecycle_scope_id: "construct-1",
+    remaining_budget_nanos: "10000000000",
+  });
+
+  const result = await rpc(child.origin, "lenso.invoke", {
+    session,
+    correlation_id: "70",
+    endpoint_id: "endpoint-0",
+    capability_id: "example.interaction-result@1",
+    descriptor_version: VERSION,
+    descriptor_digest: "sha256:6600000000000000000000000000000000000000000000000000000000000066",
+    operation: "exercise",
+    scope: {
+      scope_id: "invoke-70",
+      parent_scope_id: null,
+      remaining_budget_nanos: "5000000000",
+      permissions: ["network:provider"],
+      extensions: [{ key: "trace", value: "kept" }],
+    },
+    payload: {},
+  });
+  expect(result.outcome).toEqual({
+    kind: "success",
+    value: {
+      message: { kind: "message", message: { text: "echo: hello" } },
+      halfClosed: { kind: "peer_half_closed" },
+      terminal: { kind: "terminal", outcome: { ok: true } },
+      admissions: [
+        { subscriberInstance: "notifications-a", admission: "accepted" },
+        { subscriberInstance: "notifications-b", admission: "exhausted" },
+      ],
+      optionalMissing: true,
+    },
+  });
+  expect(callbacks.filter(({ method }) => method === "lenso.event.publish").map(({ params }) => [
+    params.requirement_id,
+    params.route_id,
+    params.scope.parent_scope_id,
+  ]).sort((left, right) => left[1].localeCompare(right[1]))).toEqual([
+    ["notifications", "event_route_a", "invoke-70"],
+    ["notifications", "event_route_b", "invoke-70"],
+  ]);
+  expect(callbacks.find(({ method }) => method === "lenso.stream.open")?.params).toMatchObject({
+    requirement_id: "conversation",
+    route_id: "stream_route",
+    scope: {
+      parent_scope_id: "invoke-70",
+      permissions: ["network:provider"],
+      extensions: [{ key: "trace", value: "kept" }],
+    },
+  });
+  for (let attempt = 0; attempt < 20 && !callbacks.some(({ method }) => method === "lenso.stream.cancel"); attempt++) {
+    await Bun.sleep(5);
+  }
+  expect(callbacks.some(({ method }) => method === "lenso.stream.cancel")).toBe(true);
+
+  await rpc(child.origin, "lenso.stop", {
+    session,
+    cleanup_scope_id: "cleanup-1",
+    remaining_budget_nanos: "1000000000",
+  });
+  expect(await child.process.exited).toBe(0);
+  callback.server.stop();
+});
+
 function initialization(session: string): InitializeParams {
   return {
     api_version: 2,
@@ -144,6 +224,78 @@ function initialization(session: string): InitializeParams {
       capability_id: SYNC_ID,
       descriptor_version: VERSION,
       descriptor_digest: SYNC_DIGEST,
+    }],
+    limits: limits(4),
+  };
+}
+
+function interactionInitialization(session: string): InitializeParams {
+  const conversationDigest =
+    "sha256:64af40074cfd269331a249a9639edcfa3baacb50859e70d4b1eb35b352028a4b";
+  const notificationsDigest =
+    "sha256:b486651eeddeefe255d4fa59655a39bff665d7090a1d60e86512e31c0c83041f";
+  return {
+    api_version: 2,
+    identity: identity(session, "interaction-consumer"),
+    config: {},
+    required_declarations: [
+      {
+        requirement_id: "conversation",
+        capability_id: "example.conversation@1",
+        descriptor_version: VERSION,
+        descriptor_digest: conversationDigest,
+        cardinality: "one",
+      },
+      {
+        requirement_id: "notifications",
+        capability_id: "example.notifications@1",
+        descriptor_version: VERSION,
+        descriptor_digest: notificationsDigest,
+        cardinality: "many",
+      },
+      {
+        requirement_id: "optional_notifications",
+        capability_id: "example.notifications@1",
+        descriptor_version: VERSION,
+        descriptor_digest: notificationsDigest,
+        cardinality: "optional",
+      },
+    ],
+    routes: [
+      {
+        route_id: "stream_route",
+        requirement_id: "conversation",
+        capability_id: "example.conversation@1",
+        descriptor_version: VERSION,
+        descriptor_digest: conversationDigest,
+        provider_instance: "conversation-provider",
+        provider_order: 0,
+      },
+      {
+        route_id: "event_route_a",
+        requirement_id: "notifications",
+        capability_id: "example.notifications@1",
+        descriptor_version: VERSION,
+        descriptor_digest: notificationsDigest,
+        provider_instance: "notifications-a",
+        provider_order: 0,
+      },
+      {
+        route_id: "event_route_b",
+        requirement_id: "notifications",
+        capability_id: "example.notifications@1",
+        descriptor_version: VERSION,
+        descriptor_digest: notificationsDigest,
+        provider_instance: "notifications-b",
+        provider_order: 1,
+      },
+    ],
+    provided_endpoints: [{
+      endpoint_id: "endpoint-0",
+      capability_id: "example.interaction-result@1",
+      descriptor_version: VERSION,
+      descriptor_digest:
+        "sha256:6600000000000000000000000000000000000000000000000000000000000066",
     }],
     limits: limits(4),
   };
@@ -233,7 +385,11 @@ function callbackServer(secret: string, session: string, settlements: unknown[])
       const received = request.headers.get(BUN_AUTHORING_CALLBACK_PROOF_HEADER) ?? "";
       const expected = await proof(
         secret,
-        authoringCallbackProofMessage(session, rpcRequest.method, rpcRequest.params),
+        authoringCallbackProofMessage(
+          session,
+          rpcRequest.method as Parameters<typeof authoringCallbackProofMessage>[1],
+          rpcRequest.params,
+        ),
       );
       if (!timingSafeEqual(decodeBase64Url32(received), decodeBase64Url32(expected))) {
         return new Response(null, { status: 401 });
@@ -256,6 +412,87 @@ function callbackServer(secret: string, session: string, settlements: unknown[])
           outcome: { kind: "success", value: { text: "complete object" } },
         },
       });
+    },
+  });
+  return { server, origin: `http://127.0.0.1:${server.port}/` };
+}
+
+function interactionCallbackServer(
+  secret: string,
+  session: string,
+  settlements: unknown[],
+  callbacks: Array<{ method: string; params: any }>,
+) {
+  let receives = 0;
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    async fetch(request) {
+      const rpcRequest = await request.json() as { id: string; method: string; params: any };
+      const received = request.headers.get(BUN_AUTHORING_CALLBACK_PROOF_HEADER) ?? "";
+      const expected = await proof(
+        secret,
+        authoringCallbackProofMessage(
+          session,
+          rpcRequest.method as Parameters<typeof authoringCallbackProofMessage>[1],
+          rpcRequest.params,
+        ),
+      );
+      if (!timingSafeEqual(decodeBase64Url32(received), decodeBase64Url32(expected))) {
+        return new Response(null, { status: 401 });
+      }
+      if (rpcRequest.method === "lenso.settled") {
+        settlements.push(rpcRequest.params);
+        return Response.json({ jsonrpc: "2.0", id: rpcRequest.id, result: {} });
+      }
+      callbacks.push({ method: rpcRequest.method, params: rpcRequest.params });
+      const base = {
+        session,
+        correlation_id: rpcRequest.params.correlation_id,
+      };
+      let result: unknown;
+      switch (rpcRequest.method) {
+        case "lenso.stream.open":
+          result = { ...base, outcome: {
+            kind: "opened",
+            stream_id: rpcRequest.params.request.room === "cancel" ? "2" : "1",
+          } };
+          break;
+        case "lenso.stream.send":
+          expect(rpcRequest.params).toMatchObject({ stream_id: "1", sequence: "0" });
+          result = { ...base, stream_id: "1", outcome: { kind: "accepted" } };
+          break;
+        case "lenso.stream.close_send":
+          result = { ...base, stream_id: "1", outcome: { kind: "accepted" } };
+          break;
+        case "lenso.stream.cancel":
+          result = { ...base, stream_id: rpcRequest.params.stream_id, outcome: { kind: "accepted" } };
+          break;
+        case "lenso.stream.receive": {
+          const outcomes = [
+            { kind: "message", sequence: "0", message: { text: "echo: hello" } },
+            { kind: "peer_half_closed" },
+            { kind: "terminal", outcome: { kind: "success" } },
+          ];
+          result = { ...base, stream_id: "1", outcome: outcomes[receives++] };
+          break;
+        }
+        case "lenso.event.publish":
+          result = {
+            ...base,
+            outcome: rpcRequest.params.route_id === "event_route_a"
+              ? { kind: "accepted" }
+              : { kind: "runtime", failure: {
+                kind: "resource_exhausted",
+                capability: "example.notifications@1",
+                operation: "notify",
+              } },
+          };
+          break;
+        default:
+          throw new Error(`unexpected callback method ${rpcRequest.method}`);
+      }
+      return Response.json({ jsonrpc: "2.0", id: rpcRequest.id, result });
     },
   });
   return { server, origin: `http://127.0.0.1:${server.port}/` };

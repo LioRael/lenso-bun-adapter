@@ -19,7 +19,7 @@ export type UnknownDomainError = lensoContractRuntime.UnknownDomainError;
 export type StreamEvent<Message, DomainError> = lensoContractRuntime.StreamEvent<Message, DomainError>;
 export type StreamSession<Message, DomainError> = lensoContractRuntime.StreamSession<Message, DomainError>;
 
-export interface CapabilityContractReference<Client, Provider extends object> extends CapabilityDependencyBinding<Client> {
+export interface CapabilityContractReference<Client, Provider extends object, Runtime extends DependencyInvoker = DependencyInvoker> extends CapabilityDependencyBinding<Client, Runtime> {
   readonly kind: "lenso.capability";
   readonly capability_id: string;
   readonly descriptor_version: string;
@@ -27,9 +27,9 @@ export interface CapabilityContractReference<Client, Provider extends object> ex
   readonly generated_client: string;
   readonly descriptor: CapabilityProviderDescriptor;
   bindProvider(provider: Provider): CapabilityProviderBinding;
-  required(id?: string): CapabilityDependencyDeclaration<Client, "one">;
-  optional(id?: string): CapabilityDependencyDeclaration<Client, "optional">;
-  many(id?: string): CapabilityDependencyDeclaration<Client, "many">;
+  required(id?: string): CapabilityDependencyDeclaration<Client, "one", Runtime>;
+  optional(id?: string): CapabilityDependencyDeclaration<Client, "optional", Runtime>;
+  many(id?: string): CapabilityDependencyDeclaration<Client, "many", Runtime>;
   readonly __client?: Client;
   readonly __provider?: Provider;
 }
@@ -96,7 +96,7 @@ export interface ToolProviderProvider {
   execute(context: InvocationContext, request: ExecuteRequest): Promise<ExecuteResult>;
 }
 
-export const ToolProvider: CapabilityContractReference<ToolProviderClient, ToolProviderProvider> = { kind: "lenso.capability", ...bindToolProviderDependency(), capability_id: CAPABILITY_ID, descriptor_version: DESCRIPTOR_VERSION, descriptor_digest: DESCRIPTOR_DIGEST, generated_client: "ToolProviderClient", descriptor: { capability_id: CAPABILITY_ID, descriptor_version: DESCRIPTOR_VERSION, operations: ["catalog", "execute"], stream_operations: [], event_operations: [] }, bindProvider: bindToolProviderProvider, required(id) { return { kind: "lenso.dependency", ...(id === undefined ? {} : { id }), contract: this, cardinality: "one" }; }, optional(id) { return { kind: "lenso.dependency", ...(id === undefined ? {} : { id }), contract: this, cardinality: "optional" }; }, many(id) { return { kind: "lenso.dependency", ...(id === undefined ? {} : { id }), contract: this, cardinality: "many" }; }, };
+export const ToolProvider: CapabilityContractReference<ToolProviderClient, ToolProviderProvider, DependencyInvoker> = { kind: "lenso.capability", ...bindToolProviderDependency(), capability_id: CAPABILITY_ID, descriptor_version: DESCRIPTOR_VERSION, descriptor_digest: DESCRIPTOR_DIGEST, generated_client: "ToolProviderClient", descriptor: { capability_id: CAPABILITY_ID, descriptor_version: DESCRIPTOR_VERSION, operations: ["catalog", "execute"], stream_operations: [], event_operations: [] }, bindProvider: bindToolProviderProvider, required(id) { return { kind: "lenso.dependency", ...(id === undefined ? {} : { id }), contract: this, cardinality: "one" }; }, optional(id) { return { kind: "lenso.dependency", ...(id === undefined ? {} : { id }), contract: this, cardinality: "optional" }; }, many(id) { return { kind: "lenso.dependency", ...(id === undefined ? {} : { id }), contract: this, cardinality: "many" }; }, };
 export const TOOL_PROVIDER_CONTRACT = ToolProvider;
 
 export type ProviderDispatchOutcome =
@@ -242,15 +242,21 @@ export type DependencyInvoker = (
   payload: unknown,
 ) => Promise<ProviderDispatchOutcome>;
 
-export interface CapabilityDependencyBinding<Client> {
+export type InteractionDependencyInvoker = DependencyInvoker & {
+  readonly providerInstance: string;
+  openStream(operation: string, context: InvocationContext, payload: unknown): Promise<ProviderStreamOpenOutcome>;
+  publishEvent(operation: string, context: InvocationContext, payload: unknown): Promise<ProviderEventPublishOutcome>;
+};
+
+export interface CapabilityDependencyBinding<Client, Runtime extends DependencyInvoker = DependencyInvoker> {
   readonly descriptor: CapabilityProviderDescriptor;
-  createClient(invoke: DependencyInvoker): Client;
+  createClient(invoke: Runtime): Client;
 }
 
-export interface CapabilityDependencyDeclaration<Client, Cardinality extends "one" | "optional" | "many"> {
+export interface CapabilityDependencyDeclaration<Client, Cardinality extends "one" | "optional" | "many", Runtime extends DependencyInvoker = DependencyInvoker> {
   readonly kind: "lenso.dependency";
   readonly id?: string;
-  readonly contract: CapabilityDependencyBinding<Client>;
+  readonly contract: CapabilityDependencyBinding<Client, Runtime>;
   readonly cardinality: Cardinality;
 }
 
@@ -258,7 +264,16 @@ function dependencyErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-export function bindToolProviderDependency(): CapabilityDependencyBinding<ToolProviderClient> {
+function dependencyRuntimeError(failure: RuntimeFailure): Error {
+  return Object.assign(new Error(`Capability dependency failed: ${failure.kind}`), { failure });
+}
+
+function dependencyFailure(error: unknown): RuntimeFailure {
+  if (typeof error === "object" && error !== null && "failure" in error) return (error as { failure: RuntimeFailure }).failure;
+  return { kind: "plugin_failure", detail: dependencyErrorMessage(error) };
+}
+
+export function bindToolProviderDependency(): CapabilityDependencyBinding<ToolProviderClient, DependencyInvoker> {
   return {
     descriptor: {
       capability_id: CAPABILITY_ID,

@@ -11,11 +11,14 @@ import {
   decodeBase64Url32,
   encodeBase64Url,
   validateAuthoringMessage,
+  validateEventPublishResultFor,
   validateInitializeForRuntimeProfile,
   validateEventPublish,
   validateInvoke,
   validateStreamAction,
   validateStreamOpen,
+  validateStreamOpenResultFor,
+  validateStreamResultFor,
   validateResultFor,
   type AuthoringCancelParams,
   type CancelAck,
@@ -30,6 +33,10 @@ import {
   type InvokeParams,
   type OutboundCallParams,
   type OutboundCallResult,
+  type OutboundEventPublishParams,
+  type OutboundEventPublishResult,
+  type OutboundStreamOpenParams,
+  type OutboundStreamOpenResult,
   type RouteDescriptor,
   type Settlement,
   type StreamActionResult,
@@ -47,7 +54,7 @@ import type {
   DependencyCardinality,
   DependencyDeclaration,
   DependencyDeclarations,
-  DependencyInvoker,
+  InteractionDependencyInvoker,
   LifecycleContext,
   PluginDefinition,
   PluginInputs,
@@ -55,6 +62,8 @@ import type {
 import type {
   CapabilityProviderBinding,
   ProviderDispatchOutcome,
+  ProviderEventPublishOutcome,
+  ProviderStreamOpenOutcome,
   ProviderStreamSessionBinding,
 } from "./index.js";
 
@@ -137,6 +146,7 @@ class BunAuthoringServer<
 > {
   readonly #active = new Map<string, ActiveInvocation | ActiveStreamOpen>();
   readonly #streams = new Map<string, ActiveStream>();
+  readonly #outboundStreams = new Map<string, () => void>();
   readonly #contexts = new WeakMap<InvocationContext, ActiveContext>();
   readonly #retired = new Set<string>();
   readonly #bootstrapSecret: Uint8Array;
@@ -360,11 +370,24 @@ class BunAuthoringServer<
     declaration: DependencyDeclaration<unknown, DependencyCardinality>,
     route: RouteDescriptor,
   ): BoundCapabilityClient<unknown> {
-    const invoke: DependencyInvoker = async (operation, context, payload) => {
+    const call = async (operation: string, context: InvocationContext, payload: unknown) => {
       const parent = this.#contexts.get(context);
       if (parent === undefined) throw new Error("Host calls require the active invocation context");
       return this.#outboundCall(parent, route, operation, payload);
     };
+    const invoke = Object.assign(call, {
+      providerInstance: route.provider_instance,
+      openStream: async (operation: string, context: InvocationContext, payload: unknown) => {
+        const parent = this.#contexts.get(context);
+        if (parent === undefined) throw new Error("Host calls require the active invocation context");
+        return this.#outboundStream(parent, route, operation, payload);
+      },
+      publishEvent: async (operation: string, context: InvocationContext, payload: unknown) => {
+        const parent = this.#contexts.get(context);
+        if (parent === undefined) throw new Error("Host calls require the active invocation context");
+        return this.#outboundEvent(parent, route, operation, payload);
+      },
+    }) satisfies InteractionDependencyInvoker;
     return {
       providerInstance: route.provider_instance,
       client: declaration.contract.createClient(invoke),
@@ -628,19 +651,171 @@ class BunAuthoringServer<
       requirement_id: route.requirement_id,
       route_id: route.route_id,
       operation,
-      scope: {
-        scope_id: `${parent.params.scope.scope_id}:outbound:${correlationId}`,
-        parent_scope_id: parent.params.scope.scope_id,
-        remaining_budget_nanos: remainingBudgetNanos(parent.context),
-        permissions: parent.params.scope.permissions,
-        extensions: parent.params.scope.extensions,
-      },
+      scope: outboundScope(parent, correlationId),
       payload,
     };
     try {
       const result = await this.#callback("lenso.call", request) as OutboundCallResult;
       validateResultFor(result, initialize.identity, correlationId);
       return fromWireOutcome(result.outcome);
+    } finally {
+      this.#activeOutboundCalls -= 1;
+    }
+  }
+
+  async #outboundEvent(
+    parent: ActiveContext,
+    route: RouteDescriptor,
+    operation: string,
+    event: unknown,
+  ): Promise<ProviderEventPublishOutcome> {
+    const initialize = this.#requireInitialize();
+    if (parent.controller.signal.aborted) {
+      return { kind: "runtime", failure: { kind: "cancelled", request_id: String(parent.context.requestId) } };
+    }
+    if (this.#activeOutboundCalls >= initialize.limits.max_active_outbound_calls) {
+      return { kind: "runtime", failure: { kind: "resource_exhausted", capability: route.capability_id, operation } };
+    }
+    this.#activeOutboundCalls += 1;
+    const correlationId = (this.#nextOutboundId++).toString();
+    const request: OutboundEventPublishParams = {
+      session: initialize.identity.session,
+      correlation_id: correlationId,
+      requirement_id: route.requirement_id,
+      route_id: route.route_id,
+      operation,
+      scope: outboundScope(parent, correlationId),
+      event,
+    };
+    try {
+      const result = await this.#callback("lenso.event.publish", request) as OutboundEventPublishResult;
+      validateEventPublishResultFor(result, initialize.identity, correlationId);
+      return result.outcome;
+    } finally {
+      this.#activeOutboundCalls -= 1;
+    }
+  }
+
+  async #outboundStream(
+    parent: ActiveContext,
+    route: RouteDescriptor,
+    operation: string,
+    requestPayload: unknown,
+  ): Promise<ProviderStreamOpenOutcome> {
+    const initialize = this.#requireInitialize();
+    if (parent.controller.signal.aborted) {
+      return { kind: "runtime", failure: { kind: "cancelled", request_id: String(parent.context.requestId) } };
+    }
+    if (
+      this.#activeOutboundCalls >= initialize.limits.max_active_outbound_calls ||
+      this.#outboundStreams.size >= initialize.limits.max_unfinished_executions
+    ) {
+      return { kind: "runtime", failure: { kind: "resource_exhausted", capability: route.capability_id, operation } };
+    }
+    this.#activeOutboundCalls += 1;
+    const correlationId = (this.#nextOutboundId++).toString();
+    const request: OutboundStreamOpenParams = {
+      session: initialize.identity.session,
+      correlation_id: correlationId,
+      requirement_id: route.requirement_id,
+      route_id: route.route_id,
+      operation,
+      scope: outboundScope(parent, correlationId),
+      request: requestPayload,
+    };
+    try {
+      const result = await this.#callback("lenso.stream.open", request) as OutboundStreamOpenResult;
+      validateStreamOpenResultFor(result, initialize.identity, correlationId);
+      if (result.outcome.kind === "domain") return { kind: "domain", value: result.outcome.error };
+      if (result.outcome.kind === "runtime") return result.outcome;
+
+      const streamId = result.outcome.stream_id;
+      let nextSendSequence = 0n;
+      let closed = false;
+      const finish = () => {
+        closed = true;
+        this.#outboundStreams.delete(streamId);
+      };
+      const action = async (
+        method: "lenso.stream.send" | "lenso.stream.close_send",
+        params: StreamSendParams | StreamReceiveParams,
+      ) => {
+        if (closed) return { kind: "runtime", failure: { kind: "protocol_violation", capability: route.capability_id } } as const;
+        if (this.#activeOutboundCalls >= initialize.limits.max_active_outbound_calls) {
+          return { kind: "runtime", failure: { kind: "resource_exhausted", capability: route.capability_id } } as const;
+        }
+        this.#activeOutboundCalls += 1;
+        try {
+          const result = await this.#callback(method, params) as StreamActionResult;
+          validateStreamResultFor(result, initialize.identity, params.correlation_id, streamId, "stream_action_result");
+          if (result.outcome.kind === "runtime") finish();
+          return result.outcome;
+        } finally {
+          this.#activeOutboundCalls -= 1;
+        }
+      };
+      const binding: ProviderStreamSessionBinding = {
+        send: async (message) => {
+          const actionId = (this.#nextOutboundId++).toString();
+          const outcome = await action("lenso.stream.send", {
+            session: initialize.identity.session,
+            correlation_id: actionId,
+            stream_id: streamId,
+            sequence: nextSendSequence.toString(),
+            message,
+          });
+          if (outcome.kind === "accepted") nextSendSequence += 1n;
+          return outcome;
+        },
+        receive: async () => {
+          if (closed) return { kind: "runtime", failure: { kind: "protocol_violation", capability: route.capability_id } };
+          if (this.#activeOutboundCalls >= initialize.limits.max_active_outbound_calls) {
+            return { kind: "runtime", failure: { kind: "resource_exhausted", capability: route.capability_id } };
+          }
+          this.#activeOutboundCalls += 1;
+          const actionId = (this.#nextOutboundId++).toString();
+          try {
+            const result = await this.#callback("lenso.stream.receive", {
+              session: initialize.identity.session,
+              correlation_id: actionId,
+              stream_id: streamId,
+            } satisfies StreamReceiveParams) as StreamReceiveResult;
+            validateStreamResultFor(result, initialize.identity, actionId, streamId, "stream_receive_result");
+            switch (result.outcome.kind) {
+              case "message": return { kind: "message", value: result.outcome.message };
+              case "peer_half_closed": return { kind: "peer_half_closed" };
+              case "terminal":
+                finish();
+                return result.outcome.outcome.kind === "success"
+                  ? { kind: "terminal_success" }
+                  : { kind: "terminal_domain", value: result.outcome.outcome.error };
+              case "runtime": finish(); return result.outcome;
+            }
+          } finally {
+            this.#activeOutboundCalls -= 1;
+          }
+        },
+        closeSend: async () => {
+          const actionId = (this.#nextOutboundId++).toString();
+          return action("lenso.stream.close_send", {
+            session: initialize.identity.session,
+            correlation_id: actionId,
+            stream_id: streamId,
+          });
+        },
+        cancel: () => {
+          if (closed) return;
+          finish();
+          const actionId = (this.#nextOutboundId++).toString();
+          void this.#callback("lenso.stream.cancel", {
+            session: initialize.identity.session,
+            correlation_id: actionId,
+            stream_id: streamId,
+          } satisfies StreamReceiveParams).catch(() => undefined);
+        },
+      };
+      this.#outboundStreams.set(streamId, binding.cancel);
+      return { kind: "opened", stream: binding };
     } finally {
       this.#activeOutboundCalls -= 1;
     }
@@ -668,6 +843,8 @@ class BunAuthoringServer<
     if (this.#active.size > 0 || this.#activeOutboundCalls > 0) {
       throw new Error("Bun Plugin stopped with unfinished work");
     }
+    for (const cancel of this.#outboundStreams.values()) cancel();
+    this.#outboundStreams.clear();
     for (const stream of this.#streams.values()) {
       stream.binding.cancel();
       this.#contexts.delete(stream.context);
@@ -708,7 +885,18 @@ class BunAuthoringServer<
     return result;
   }
 
-  async #callback(method: "lenso.call" | "lenso.settled", params: unknown): Promise<unknown> {
+  async #callback(
+    method:
+      | "lenso.call"
+      | "lenso.settled"
+      | "lenso.event.publish"
+      | "lenso.stream.open"
+      | "lenso.stream.send"
+      | "lenso.stream.receive"
+      | "lenso.stream.close_send"
+      | "lenso.stream.cancel",
+    params: unknown,
+  ): Promise<unknown> {
     const initialize = this.#requireInitialize();
     const proof = await createProof(
       this.#bootstrapSecret,
@@ -903,6 +1091,16 @@ function remainingBudget(initial: string): {
 
 function remainingBudgetNanos(context: BunInvocationContext): string {
   return (context as InternalInvocationContext)[remainingNanos]();
+}
+
+function outboundScope(parent: ActiveContext, correlationId: string): InvocationScope {
+  return {
+    scope_id: `${parent.params.scope.scope_id}:outbound:${correlationId}`,
+    parent_scope_id: parent.params.scope.scope_id,
+    remaining_budget_nanos: remainingBudgetNanos(parent.context),
+    permissions: parent.params.scope.permissions,
+    extensions: parent.params.scope.extensions,
+  };
 }
 
 function toWireOutcome(
