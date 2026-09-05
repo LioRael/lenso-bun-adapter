@@ -284,10 +284,28 @@ class StaticEvaluator {
       }
       if (
         ts.isGetAccessorDeclaration(property) ||
-        ts.isSetAccessorDeclaration(property) ||
-        ts.isMethodDeclaration(property)
+        ts.isSetAccessorDeclaration(property)
       ) {
-        throw this.error(property, "methods and accessors are not declaration values", source);
+        throw this.error(property, "accessors are not declaration values", source);
+      }
+      if (ts.isMethodDeclaration(property)) {
+        const key = propertyName(property.name, this, source);
+        if (modes[key] !== "handler") {
+          throw this.error(property, "methods are only valid in handler positions", source);
+        }
+        const handlerSpan = span(property, source);
+        this.add(
+          entries,
+          key,
+          Object.freeze({
+            kind: "handler",
+            reference: `${handlerSpan.file}:${handlerSpan.start}:${handlerSpan.end}`,
+            span: handlerSpan,
+          }),
+          property,
+          source,
+        );
+        continue;
       }
       if (!ts.isPropertyAssignment(property) && !ts.isShorthandPropertyAssignment(property)) {
         throw this.error(property, "unsupported object declaration member", source);
