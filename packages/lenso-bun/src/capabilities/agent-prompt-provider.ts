@@ -19,12 +19,19 @@ export type UnknownDomainError = lensoContractRuntime.UnknownDomainError;
 export type StreamEvent<Message, DomainError> = lensoContractRuntime.StreamEvent<Message, DomainError>;
 export type StreamSession<Message, DomainError> = lensoContractRuntime.StreamSession<Message, DomainError>;
 
-export interface CapabilityContractReference<Client> extends CapabilityDependencyBinding<Client> {
+export interface CapabilityContractReference<Client, Provider extends object> extends CapabilityDependencyBinding<Client> {
+  readonly kind: "lenso.capability";
   readonly capability_id: string;
   readonly descriptor_version: string;
   readonly descriptor_digest: string;
   readonly generated_client: string;
+  readonly descriptor: CapabilityProviderDescriptor;
+  bindProvider(provider: Provider): CapabilityProviderBinding;
+  required(id?: string): CapabilityDependencyDeclaration<Client, "one">;
+  optional(id?: string): CapabilityDependencyDeclaration<Client, "optional">;
+  many(id?: string): CapabilityDependencyDeclaration<Client, "many">;
   readonly __client?: Client;
+  readonly __provider?: Provider;
 }
 
 export interface ContributeRequest {
@@ -61,11 +68,35 @@ export interface PromptProviderProvider {
   contribute(context: InvocationContext, request: ContributeRequest): Promise<ContributeResult>;
 }
 
-export const PROMPT_PROVIDER_CONTRACT: CapabilityContractReference<PromptProviderClient> = { ...bindPromptProviderDependency(), capability_id: CAPABILITY_ID, descriptor_version: DESCRIPTOR_VERSION, descriptor_digest: DESCRIPTOR_DIGEST, generated_client: "PromptProviderClient" };
+export const PromptProvider: CapabilityContractReference<PromptProviderClient, PromptProviderProvider> = { kind: "lenso.capability", ...bindPromptProviderDependency(), capability_id: CAPABILITY_ID, descriptor_version: DESCRIPTOR_VERSION, descriptor_digest: DESCRIPTOR_DIGEST, generated_client: "PromptProviderClient", descriptor: { capability_id: CAPABILITY_ID, descriptor_version: DESCRIPTOR_VERSION, operations: ["contribute"], stream_operations: [], event_operations: [] }, bindProvider: bindPromptProviderProvider, required(id) { return { kind: "lenso.dependency", ...(id === undefined ? {} : { id }), contract: this, cardinality: "one" }; }, optional(id) { return { kind: "lenso.dependency", ...(id === undefined ? {} : { id }), contract: this, cardinality: "optional" }; }, many(id) { return { kind: "lenso.dependency", ...(id === undefined ? {} : { id }), contract: this, cardinality: "many" }; }, };
+export const PROMPT_PROVIDER_CONTRACT = PromptProvider;
 
 export type ProviderDispatchOutcome =
   | { readonly kind: "success"; readonly value: unknown }
   | { readonly kind: "domain"; readonly value: unknown }
+  | { readonly kind: "runtime"; readonly failure: RuntimeFailure };
+export type ProviderStreamActionOutcome =
+  | { readonly kind: "accepted" }
+  | { readonly kind: "runtime"; readonly failure: RuntimeFailure };
+export type ProviderStreamReceiveOutcome =
+  | { readonly kind: "message"; readonly value: unknown }
+  | { readonly kind: "peer_half_closed" }
+  | { readonly kind: "terminal_success" }
+  | { readonly kind: "terminal_domain"; readonly value: unknown }
+  | { readonly kind: "runtime"; readonly failure: RuntimeFailure };
+/** @internal Runtime lowering seam. */
+export interface ProviderStreamSessionBinding {
+  send(message: unknown): Promise<ProviderStreamActionOutcome>;
+  receive(): Promise<ProviderStreamReceiveOutcome>;
+  closeSend(): Promise<ProviderStreamActionOutcome>;
+  cancel(): void;
+}
+export type ProviderStreamOpenOutcome =
+  | { readonly kind: "opened"; readonly stream: ProviderStreamSessionBinding }
+  | { readonly kind: "domain"; readonly value: unknown }
+  | { readonly kind: "runtime"; readonly failure: RuntimeFailure };
+export type ProviderEventPublishOutcome =
+  | { readonly kind: "accepted" }
   | { readonly kind: "runtime"; readonly failure: RuntimeFailure };
 
 export interface CapabilityProviderDescriptor {
@@ -76,6 +107,7 @@ export interface CapabilityProviderDescriptor {
   readonly event_operations: ReadonlyArray<string>;
 }
 
+/** @internal Runtime lowering seam. */
 export interface CapabilityProviderBinding {
   readonly descriptor: CapabilityProviderDescriptor;
   invokeRequest(
@@ -83,6 +115,16 @@ export interface CapabilityProviderBinding {
     context: InvocationContext,
     payload: unknown,
   ): Promise<ProviderDispatchOutcome>;
+  openStream(
+    operation: string,
+    context: InvocationContext,
+    payload: unknown,
+  ): Promise<ProviderStreamOpenOutcome>;
+  publishEvent(
+    operation: string,
+    context: InvocationContext,
+    payload: unknown,
+  ): Promise<ProviderEventPublishOutcome>;
 }
 
 function providerErrorMessage(error: unknown): string {
@@ -126,6 +168,20 @@ export function bindPromptProviderProvider(
           return { kind: "runtime", failure: { kind: "unknown_operation", operation } };
       }
     },
+    async openStream(operation, context, payload) {
+      switch (operation) {
+
+        default:
+          return { kind: "runtime", failure: { kind: "unknown_operation", operation } };
+      }
+    },
+    async publishEvent(operation, context, payload) {
+      switch (operation) {
+
+        default:
+          return { kind: "runtime", failure: { kind: "unknown_operation", operation } };
+      }
+    },
   };
 }
 
@@ -141,6 +197,13 @@ export type DependencyInvoker = (
 export interface CapabilityDependencyBinding<Client> {
   readonly descriptor: CapabilityProviderDescriptor;
   createClient(invoke: DependencyInvoker): Client;
+}
+
+export interface CapabilityDependencyDeclaration<Client, Cardinality extends "one" | "optional" | "many"> {
+  readonly kind: "lenso.dependency";
+  readonly id?: string;
+  readonly contract: CapabilityDependencyBinding<Client>;
+  readonly cardinality: Cardinality;
 }
 
 function dependencyErrorMessage(error: unknown): string {

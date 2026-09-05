@@ -254,8 +254,10 @@ class BunAuthoringServer<
     validateInitializeForRuntimeProfile(initialize, this.runtimeProfile);
     if (initialize.api_version !== AUTHORING_API_VERSION) throw new Error("unsupported Authoring API");
     const declaredDependencies = this.definition.dependencies ?? {};
-    const names = Object.values(declaredDependencies)
-      .map((raw) => (raw as DependencyDeclaration<unknown, DependencyCardinality>).id)
+    const names = Object.entries(declaredDependencies)
+      .map(([name, raw]) =>
+        (raw as DependencyDeclaration<unknown, DependencyCardinality>).id ?? name
+      )
       .sort();
     const admittedNames = initialize.required_declarations.map((value) => value.requirement_id);
     if (JSON.stringify(names) !== JSON.stringify(admittedNames)) {
@@ -264,7 +266,7 @@ class BunAuthoringServer<
     for (const [name, raw] of Object.entries(declaredDependencies)) {
       const declaration = raw as DependencyDeclaration<unknown, DependencyCardinality>;
       const admitted = initialize.required_declarations.find(
-        (candidate) => candidate.requirement_id === declaration.id,
+        (candidate) => candidate.requirement_id === (declaration.id ?? name),
       );
       if (
         admitted === undefined || declaration.cardinality !== admitted.cardinality ||
@@ -337,7 +339,9 @@ class BunAuthoringServer<
     const dependencies: Record<string, unknown> = {};
     for (const [name, raw] of Object.entries(this.definition.dependencies ?? {})) {
       const declaration = raw as DependencyDeclaration<unknown, DependencyCardinality>;
-      const routes = initialize.routes.filter((route) => route.requirement_id === declaration.id);
+      const routes = initialize.routes.filter(
+        (route) => route.requirement_id === (declaration.id ?? name),
+      );
       const clients = routes.map((route) => this.#boundClient(declaration, route));
       dependencies[name] = declaration.cardinality === "many"
         ? Object.freeze(clients)

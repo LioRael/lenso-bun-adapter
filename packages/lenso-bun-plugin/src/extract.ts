@@ -13,7 +13,6 @@ import type {
   BuildPackageIdentity,
   BuildValue,
   ContractArgument,
-  DeclarationArgument,
   HandlerArgument,
   SourceSpan,
   ValueArgument,
@@ -134,6 +133,7 @@ export async function extractPluginDefinition(
     const allowed = new Set([
       "config",
       "dependencies",
+      "provides",
       "providers",
       "create",
       "stop",
@@ -148,9 +148,18 @@ export async function extractPluginDefinition(
         );
       }
     }
+    const providesValue = declaration.get("provides");
+    const providersValue = declaration.get("providers");
+    if ((providesValue === undefined) === (providersValue === undefined)) {
+      throw evaluator.error(
+        call.arguments[0]!,
+        "definePlugin requires exactly one of provides or providers",
+        source,
+      );
+    }
     const providers = requiredArray(
-      declaration.get("providers"),
-      "providers",
+      providesValue ?? providersValue,
+      providesValue === undefined ? "providers" : "provides",
       evaluator,
       source,
     );
@@ -390,8 +399,32 @@ class StaticEvaluator {
     return Object.freeze({ kind: "value", value, span: span(node, node.getSourceFile()) });
   }
 
-  private async call(call: ts.CallExpression): Promise<DeclarationArgument> {
+  private async call(call: ts.CallExpression): Promise<BuildArgument> {
     const source = call.getSourceFile();
+    if (
+      ts.isPropertyAccessExpression(call.expression) &&
+      ["required", "optional", "many"].includes(call.expression.name.text)
+    ) {
+      const contract = await this.meaning(call.expression.expression);
+      if (contract?.kind === "contract") {
+        if (call.arguments.length > 1) {
+          throw this.error(call, "Capability dependency cardinality accepts at most one id", source);
+        }
+        const id = call.arguments[0];
+        const idValue = id === undefined ? undefined : unwrap(id);
+        if (idValue !== undefined && !ts.isStringLiteralLikeNode(idValue)) {
+          throw this.error(idValue, "Capability dependency id must be a string literal", source);
+        }
+        return this.literal({
+          kind: "lenso.dependency",
+          cardinality: call.expression.name.text === "required"
+            ? "one"
+            : call.expression.name.text,
+          ...(idValue === undefined ? {} : { id: idValue.text }),
+          contract: contractArgument(contract, call.expression.expression, source),
+        }, call);
+      }
+    }
     const meaning = await this.meaning(call.expression);
     if (meaning?.kind !== "declaration") {
       throw this.error(call.expression, "unsupported call in declaration", source);

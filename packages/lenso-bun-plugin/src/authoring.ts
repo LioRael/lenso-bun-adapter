@@ -36,7 +36,7 @@ export interface DependencyDeclaration<
   Cardinality extends DependencyCardinality = "one",
 > {
   readonly kind: "lenso.dependency";
-  readonly id: string;
+  readonly id?: string;
   readonly contract: CapabilityDependencyBinding<Client>;
   readonly cardinality: Cardinality;
 }
@@ -85,6 +85,13 @@ export interface ProviderDeclaration<Instance extends object> {
   readonly bind: (instance: Instance) => CapabilityProviderBinding;
 }
 
+/** A generated Capability value used for both Provider and dependency authoring. */
+export interface CapabilityProviderContract<Instance extends object> {
+  readonly kind: "lenso.capability";
+  readonly descriptor: CapabilityProviderDescriptor;
+  bindProvider(instance: Instance): CapabilityProviderBinding;
+}
+
 /** Adapts a generated instance binder to the generic Plugin declaration. */
 export function provider<Instance extends object>(
   descriptor: CapabilityProviderDescriptor,
@@ -128,6 +135,17 @@ export type PluginProvider<Instance extends object> =
   | ProviderDeclaration<Instance>
   | CapabilityProviderBinding;
 
+type DeclaredProviders<Instance extends object> =
+  | {
+      readonly provides: ReadonlyArray<CapabilityProviderContract<Instance>>;
+      readonly providers?: never;
+    }
+  | {
+      /** @deprecated Prefer generated Capability values in `provides`. */
+      readonly providers: ReadonlyArray<PluginProvider<Instance>>;
+      readonly provides?: never;
+    };
+
 export type PluginDefinition<
   Instance extends object,
   Config extends ConfigDeclaration<unknown> | undefined =
@@ -163,10 +181,7 @@ export type PluginOptionsWithCreate<
   Config extends ConfigDeclaration<unknown> | undefined,
   Dependencies extends DependencyDeclarations | undefined,
   Factory extends (...arguments_: never[]) => object | Promise<object>,
-> = DeclaredInputs<Config, Dependencies> & {
-  readonly providers: ReadonlyArray<
-    PluginProvider<NoInfer<CreatedInstance<Factory>>>
-  >;
+> = DeclaredInputs<Config, Dependencies> & DeclaredProviders<NoInfer<CreatedInstance<Factory>>> & {
   readonly create: Factory &
     ((
       inputs: PluginInputs<Config, Dependencies>,
@@ -186,10 +201,7 @@ export type CreatedInstance<
 export type PluginOptionsWithDefaultInstance<
   Config extends ConfigDeclaration<unknown> | undefined,
   Dependencies extends DependencyDeclarations | undefined,
-> = DeclaredInputs<Config, Dependencies> & {
-  readonly providers: ReadonlyArray<
-    PluginProvider<NoInfer<PluginInputs<Config, Dependencies>>>
-  >;
+> = DeclaredInputs<Config, Dependencies> & DeclaredProviders<NoInfer<PluginInputs<Config, Dependencies>>> & {
   readonly create?: undefined;
   readonly stop?: (
     instance: NoInfer<PluginInputs<Config, Dependencies>>,
