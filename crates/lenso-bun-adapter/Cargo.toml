@@ -20,8 +20,8 @@ hex.workspace = true
 jsonrpsee = { version = "0.26", default-features = false, features = ["http-client", "server"] }
 lenso-app-plan = { version = "0.4.1" }
 lenso-kernel = { version = "0.3.3" }
-lenso-process-protocol = { version = "0.2.1" }
-lenso-runtime-codec = { version = "0.3.1" }
+lenso-process-protocol = { version = "0.2.2" }
+lenso-runtime-codec = { version = "0.3.4" }
 lenso-process-sdk = { version = "0.1.1", optional = true }
 serde.workspace = true
 serde_json.workspace = true

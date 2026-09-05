@@ -109,10 +109,16 @@ Lenso generates the executable entrypoint that calls the low-level `serve`
 function. Plugin authors export the definition and do not implement startup or
 wire handling themselves.
 
-The current public surface supports request Capabilities over the production
-JSON-RPC loopback wire. Framed stdio remains a conformance and benchmark wire,
-not an authoring surface. Stream and Event descriptors are rejected until their
-typed SDK sessions are available rather than silently exposing partial support.
+The public Provider surface supports generated Request, bidirectional Stream,
+and Event Capability bindings over the production JSON-RPC loopback wire.
+Stream sessions preserve ordered sends, independent half-close, terminal domain
+outcomes, and cancellation. Event publication returns only after bounded child
+admission. Framed stdio remains a conformance and benchmark wire, not an
+authoring surface.
+
+Generated dependency clients currently expose Request operations. Stream and
+Event dependency clients will use the same named, Plan-selected route table when
+their outbound projections ship; Plugin code never selects providers itself.
 
 ## One object with named dependencies
 

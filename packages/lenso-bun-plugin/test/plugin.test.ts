@@ -295,11 +295,11 @@ test("rejects Provider responses that exceed the negotiated frame bound", async 
   }
 });
 
-test("rejects duplicate providers and unsupported partial interaction support", () => {
+test("rejects duplicate providers and admits classified Stream providers", () => {
   expect(() => definePlugin({ providers: [binding(), binding()] })).toThrow(
     "duplicate Capability Provider",
   );
-  expect(() =>
+  expect(
     definePlugin({
       providers: [
         {
@@ -310,8 +310,8 @@ test("rejects duplicate providers and unsupported partial interaction support", 
           },
         },
       ],
-    }),
-  ).toThrow("supports request Capabilities only");
+    }).providers[0]?.descriptor.stream_operations,
+  ).toEqual(["greet"]);
 });
 
 test("constructs one instance from admitted config and dependency clients, then stops it", async () => {

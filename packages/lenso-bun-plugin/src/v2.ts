@@ -12,12 +12,17 @@ import {
   encodeBase64Url,
   validateAuthoringMessage,
   validateInitializeForRuntimeProfile,
+  validateEventPublish,
   validateInvoke,
+  validateStreamAction,
+  validateStreamOpen,
   validateResultFor,
   type AuthoringCancelParams,
   type CancelAck,
   type ConstructParams,
   type ConstructedResult,
+  type EventPublishParams,
+  type EventPublishResult,
   type InitializeParams,
   type InvocationOutcome,
   type InvocationResult,
@@ -27,6 +32,12 @@ import {
   type OutboundCallResult,
   type RouteDescriptor,
   type Settlement,
+  type StreamActionResult,
+  type StreamOpenParams,
+  type StreamOpenResult,
+  type StreamReceiveParams,
+  type StreamReceiveResult,
+  type StreamSendParams,
   type StopParams,
   type StoppedResult,
 } from "@lenso/process-protocol";
@@ -41,7 +52,11 @@ import type {
   PluginDefinition,
   PluginInputs,
 } from "./authoring.js";
-import type { CapabilityProviderBinding, ProviderDispatchOutcome } from "./index.js";
+import type {
+  CapabilityProviderBinding,
+  ProviderDispatchOutcome,
+  ProviderStreamSessionBinding,
+} from "./index.js";
 
 export const BUN_AUTHORING_RUNTIME_PROFILE = "lenso.bun-authoring@2";
 export const BUN_AUTHORING_CALLBACK_PROOF_HEADER = "x-lenso-authoring-proof";
@@ -91,6 +106,17 @@ interface ActiveInvocation extends ActiveContext {
   readonly params: InvokeParams;
 }
 
+interface ActiveStreamOpen extends ActiveContext {
+  readonly params: StreamOpenParams;
+}
+
+interface ActiveStream {
+  readonly binding: ProviderStreamSessionBinding;
+  readonly context: BunInvocationContext;
+  nextSendSequence: bigint;
+  nextReceiveSequence: bigint;
+}
+
 /** Runs one statically built complete-object Plugin over authenticated JSON-RPC/HTTP. */
 export async function servePluginV2<
   Instance extends object,
@@ -109,7 +135,8 @@ class BunAuthoringServer<
   Config extends import("./authoring.js").ConfigDeclaration<unknown> | undefined,
   Dependencies extends DependencyDeclarations | undefined,
 > {
-  readonly #active = new Map<string, ActiveInvocation>();
+  readonly #active = new Map<string, ActiveInvocation | ActiveStreamOpen>();
+  readonly #streams = new Map<string, ActiveStream>();
   readonly #contexts = new WeakMap<InvocationContext, ActiveContext>();
   readonly #retired = new Set<string>();
   readonly #bootstrapSecret: Uint8Array;
@@ -120,7 +147,9 @@ class BunAuthoringServer<
   #stopAttempted = false;
   #nextOutboundId = 1n;
   #nextCallbackId = 1n;
+  #nextStreamId = 1n;
   #activeOutboundCalls = 0;
+  #activeEventPublications = 0;
   #server: { stop(closeActiveConnections?: boolean): void } | undefined;
   #finish: (() => void) | undefined;
 
@@ -179,6 +208,12 @@ class BunAuthoringServer<
       case "lenso.initialize": return this.#initializeSession(params as InitializeRequest);
       case "lenso.construct": return this.#construct(params as ConstructParams);
       case "lenso.invoke": return this.#invoke(params as InvokeParams);
+      case "lenso.event.publish": return this.#publishEvent(params as EventPublishParams);
+      case "lenso.stream.open": return this.#openStream(params as StreamOpenParams);
+      case "lenso.stream.send": return this.#sendStream(params as StreamSendParams);
+      case "lenso.stream.receive": return this.#receiveStream(params as StreamReceiveParams);
+      case "lenso.stream.close_send": return this.#closeStreamSend(params as StreamReceiveParams);
+      case "lenso.stream.cancel": return this.#cancelStream(params as StreamReceiveParams);
       case "lenso.cancel": return this.#cancel(params as AuthoringCancelParams);
       case "lenso.stop": return this.#stop(params as StopParams);
       default: throw new Error(`unknown Bun Authoring method ${method}`);
@@ -393,13 +428,176 @@ class BunAuthoringServer<
     };
   }
 
-  async #settled(params: InvokeParams, state: Settlement["state"]): Promise<void> {
+  async #settled(
+    params: { readonly session: string; readonly correlation_id: string; readonly scope: InvocationScope },
+    state: Settlement["state"],
+  ): Promise<void> {
     await this.#callback("lenso.settled", {
       session: params.session,
       scope_id: params.scope.scope_id,
       correlation_id: params.correlation_id,
       state,
     } satisfies Settlement);
+  }
+
+  async #publishEvent(params: EventPublishParams): Promise<EventPublishResult> {
+    const initialize = this.#requireInitialize();
+    validateEventPublish(params, initialize);
+    if (this.#instance === undefined) throw new Error("Bun Plugin published to before construction");
+    const controller = new AbortController();
+    const context = invocationContext(params.scope, params.correlation_id, controller.signal);
+    const active: ActiveContext = { params, controller, context };
+    this.#contexts.set(context, active);
+    const provider = this.#providers.get(params.endpoint_id);
+    if (provider === undefined) throw new Error("unknown admitted endpoint");
+    if (provider.publishEvent === undefined) throw new Error("Event operation has no provider binding");
+    if (this.#activeEventPublications >= initialize.limits.max_queued_calls) {
+      return {
+        session: params.session,
+        correlation_id: params.correlation_id,
+        outcome: { kind: "runtime", failure: { kind: "resource_exhausted", capability: params.capability_id, operation: params.operation } },
+      };
+    }
+    this.#activeEventPublications += 1;
+    let outcome: EventPublishResult["outcome"];
+    try {
+      const result = await provider.publishEvent(
+        params.operation,
+        context,
+        params.event,
+        this.#instance,
+      );
+      outcome = result.kind === "accepted"
+        ? result
+        : { kind: "runtime", failure: wireFailure(result.failure, params) };
+    } catch (error) {
+      outcome = { kind: "runtime", failure: { kind: "plugin_failure", detail: boundedError(error) } };
+    } finally {
+      this.#activeEventPublications -= 1;
+      this.#contexts.delete(context);
+    }
+    return { session: params.session, correlation_id: params.correlation_id, outcome };
+  }
+
+  async #openStream(params: StreamOpenParams): Promise<StreamOpenResult> {
+    const initialize = this.#requireInitialize();
+    validateStreamOpen(params, initialize);
+    if (this.#instance === undefined) throw new Error("Bun Plugin streamed to before construction");
+    if (this.#active.has(params.correlation_id) || this.#retired.has(params.correlation_id)) {
+      throw new Error("Bun Plugin reused a correlation id");
+    }
+    if (
+      this.#retired.size >= initialize.limits.max_retired_ids ||
+      this.#active.size >= initialize.limits.max_active_invocations ||
+      this.#streams.size >= initialize.limits.max_unfinished_executions
+    ) {
+      await this.#settled(params, "completed");
+      return {
+        session: params.session,
+        correlation_id: params.correlation_id,
+        outcome: { kind: "runtime", failure: { kind: "resource_exhausted", capability: params.capability_id, operation: params.operation } },
+      };
+    }
+    const controller = new AbortController();
+    const context = invocationContext(params.scope, params.correlation_id, controller.signal);
+    const active: ActiveStreamOpen = { params, controller, context };
+    this.#active.set(params.correlation_id, active);
+    this.#contexts.set(context, active);
+    let state: Settlement["state"] = "completed";
+    let outcome: StreamOpenResult["outcome"];
+    try {
+      const provider = this.#providers.get(params.endpoint_id);
+      if (provider === undefined) throw new Error("unknown admitted endpoint");
+      if (provider.openStream === undefined) throw new Error("Stream operation has no provider binding");
+      const result = await provider.openStream(
+        params.operation,
+        context,
+        params.request,
+        this.#instance,
+      );
+      if (result.kind === "opened" && controller.signal.aborted) {
+        result.stream.cancel();
+        outcome = {
+          kind: "runtime",
+          failure: { kind: "cancelled", request_id: params.correlation_id },
+        };
+      } else if (result.kind === "opened") {
+        const streamId = (this.#nextStreamId++).toString();
+        this.#streams.set(streamId, { binding: result.stream, context, nextSendSequence: 0n, nextReceiveSequence: 0n });
+        outcome = { kind: "opened", stream_id: streamId };
+      } else if (result.kind === "domain") {
+        outcome = { kind: "domain", error: result.value };
+      } else {
+        outcome = { kind: "runtime", failure: wireFailure(result.failure, params) };
+      }
+      if (controller.signal.aborted) state = "cancelled";
+    } catch (error) {
+      state = "abandoned";
+      outcome = { kind: "runtime", failure: { kind: "plugin_failure", detail: boundedError(error) } };
+    }
+    this.#active.delete(params.correlation_id);
+    if (outcome.kind !== "opened") this.#contexts.delete(context);
+    this.#retired.add(params.correlation_id);
+    await this.#settled(params, state);
+    return { session: params.session, correlation_id: params.correlation_id, outcome };
+  }
+
+  async #sendStream(params: StreamSendParams): Promise<StreamActionResult> {
+    const initialize = this.#requireInitialize();
+    validateStreamAction(params, initialize.identity, "stream_send");
+    const stream = this.#streams.get(params.stream_id);
+    if (stream !== undefined && params.sequence !== stream.nextSendSequence.toString()) {
+      throw new Error("Bun Stream send sequence is not contiguous");
+    }
+    const outcome = stream === undefined
+      ? { kind: "runtime", failure: { kind: "protocol_violation", capability: "lenso.bun-authoring" } } as const
+      : await stream.binding.send(params.message).then((result) => result.kind === "accepted"
+        ? result
+        : { kind: "runtime" as const, failure: wireFailure(result.failure) });
+    if (stream !== undefined && outcome.kind === "accepted") stream.nextSendSequence += 1n;
+    return { session: params.session, correlation_id: params.correlation_id, stream_id: params.stream_id, outcome };
+  }
+
+  async #receiveStream(params: StreamReceiveParams): Promise<StreamReceiveResult> {
+    const initialize = this.#requireInitialize();
+    validateStreamAction(params, initialize.identity, "stream_receive");
+    const stream = this.#streams.get(params.stream_id);
+    let outcome: StreamReceiveResult["outcome"];
+    if (stream === undefined) {
+      outcome = { kind: "runtime", failure: { kind: "protocol_violation", capability: "lenso.bun-authoring" } };
+    } else {
+      const result = await stream.binding.receive();
+      switch (result.kind) {
+        case "message": outcome = { kind: "message", sequence: (stream.nextReceiveSequence++).toString(), message: result.value }; break;
+        case "peer_half_closed": outcome = { kind: "peer_half_closed" }; break;
+        case "terminal_success": outcome = { kind: "terminal", outcome: { kind: "success" } }; this.#streams.delete(params.stream_id); this.#contexts.delete(stream.context); break;
+        case "terminal_domain": outcome = { kind: "terminal", outcome: { kind: "domain", error: result.value } }; this.#streams.delete(params.stream_id); this.#contexts.delete(stream.context); break;
+        case "runtime": outcome = { kind: "runtime", failure: wireFailure(result.failure) }; break;
+      }
+    }
+    return { session: params.session, correlation_id: params.correlation_id, stream_id: params.stream_id, outcome };
+  }
+
+  async #closeStreamSend(params: StreamReceiveParams): Promise<StreamActionResult> {
+    const initialize = this.#requireInitialize();
+    validateStreamAction(params, initialize.identity, "stream_close_send");
+    const stream = this.#streams.get(params.stream_id);
+    const outcome = stream === undefined
+      ? { kind: "runtime", failure: { kind: "protocol_violation", capability: "lenso.bun-authoring" } } as const
+      : await stream.binding.closeSend().then((result) => result.kind === "accepted"
+        ? result
+        : { kind: "runtime" as const, failure: wireFailure(result.failure) });
+    return { session: params.session, correlation_id: params.correlation_id, stream_id: params.stream_id, outcome };
+  }
+
+  async #cancelStream(params: StreamReceiveParams): Promise<StreamActionResult> {
+    const initialize = this.#requireInitialize();
+    validateStreamAction(params, initialize.identity, "stream_cancel");
+    const stream = this.#streams.get(params.stream_id);
+    stream?.binding.cancel();
+    if (stream !== undefined) this.#contexts.delete(stream.context);
+    this.#streams.delete(params.stream_id);
+    return { session: params.session, correlation_id: params.correlation_id, stream_id: params.stream_id, outcome: { kind: "accepted" } };
   }
 
   async #outboundCall(
@@ -466,6 +664,11 @@ class BunAuthoringServer<
     if (this.#active.size > 0 || this.#activeOutboundCalls > 0) {
       throw new Error("Bun Plugin stopped with unfinished work");
     }
+    for (const stream of this.#streams.values()) {
+      stream.binding.cancel();
+      this.#contexts.delete(stream.context);
+    }
+    this.#streams.clear();
     if (this.#instance === undefined) throw new Error("Bun Plugin stopped before construction");
     let hook: StoppedResult["hook"] = "not_declared";
     const diagnostics: Array<{ readonly code: string; readonly detail: string }> = [];
@@ -728,6 +931,20 @@ function normalizeRuntimeFailure(
     default:
       return { kind: "runtime", failure: { kind: "plugin_failure", detail: boundedError(failure.detail ?? failure.kind) } };
   }
+}
+
+function wireFailure(
+  failure: import("@lenso/contract-runtime").RuntimeFailure,
+  invocation: Pick<InvokeParams, "correlation_id" | "capability_id" | "operation"> = {
+    correlation_id: "0",
+    capability_id: "lenso.bun-authoring",
+    operation: "stream",
+  },
+): Extract<InvocationOutcome, { readonly kind: "runtime" }>["failure"] {
+  return (normalizeRuntimeFailure(failure, invocation as InvokeParams) as Extract<
+    InvocationOutcome,
+    { readonly kind: "runtime" }
+  >).failure;
 }
 
 function fromWireOutcome(outcome: InvocationOutcome): ProviderDispatchOutcome {

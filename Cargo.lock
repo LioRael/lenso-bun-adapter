@@ -1491,9 +1491,9 @@ dependencies = [
 
 [[package]]
 name = "lenso-process-protocol"
-version = "0.2.1"
+version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "52e07ac3591bf26ed625889a4ce1af768679abcb86dc197667ee7cdc12846599"
+checksum = "5a63fa799c231c060614d894fe910ae6aa462dfd970a7bcce52d62a3630775ca"
 dependencies = [
  "base64",
  "serde",
@@ -1557,9 +1557,9 @@ dependencies = [
 
 [[package]]
 name = "lenso-runtime-codec"
-version = "0.3.1"
+version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a669f87db29eaf8afe0d787fe21c475af696a6fcaebecc283a1f62cef81079d9"
+checksum = "da30e3b6b672c1add5ef5bb28e5c08ec506813dddc846082a57e75b7902fafb8"
 dependencies = [
  "futures",
  "hex",

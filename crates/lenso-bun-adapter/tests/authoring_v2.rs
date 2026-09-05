@@ -21,8 +21,9 @@ use lenso_bun_adapter::{
     BUN_AUTHORING_RUNTIME_PROFILE, BunAdapter, BunAuthoringCallback, BunAuthoringHost,
 };
 use lenso_kernel::{
-    DeterministicDriver, ExecutionAdapterCatalog, InvocationContext, Kernel, NativeRequestEndpoint,
-    PluginDependencyHandle, RequestCapability, RuntimeFailure,
+    DeterministicDriver, EventAdmission, EventCapability, ExecutionAdapterCatalog,
+    InvocationContext, Kernel, NativeRequestEndpoint, PluginDependencyHandle, RequestCapability,
+    RuntimeFailure, StreamCapability, StreamEvent,
 };
 use lenso_native_adapter::{
     NativePluginFactory, NativePluginFactoryContext, NativePluginInstance, NativePluginRegistry,
@@ -43,6 +44,9 @@ const STORE_DIGEST: &str =
 const SYNC_DIGEST: &str = "sha256:2200000000000000000000000000000000000000000000000000000000000022";
 const ECHO_ID: &str = "example.echo@1";
 const ECHO_DIGEST: &str = "sha256:4400000000000000000000000000000000000000000000000000000000000044";
+const CHANNEL_ID: &str = "example.channel@1";
+const CHANNEL_DIGEST: &str =
+    "sha256:5500000000000000000000000000000000000000000000000000000000000055";
 
 #[derive(Debug)]
 struct Echo;
@@ -97,6 +101,130 @@ impl JsonCapabilityCodec for EchoCodec {
     }
 
     fn decode_domain_error(
+        &self,
+        _: &str,
+        value: serde_json::Value,
+    ) -> Result<Box<dyn Any>, RuntimeFailure> {
+        Ok(Box::new(value))
+    }
+}
+
+#[derive(Debug)]
+struct ChannelStream;
+
+impl StreamCapability for ChannelStream {
+    type OpenRequest = serde_json::Value;
+    type Message = serde_json::Value;
+    type DomainError = serde_json::Value;
+
+    const ID: &'static str = CHANNEL_ID;
+    const DESCRIPTOR_VERSION: &'static str = VERSION;
+}
+
+#[derive(Debug)]
+struct ChannelEvent;
+
+impl EventCapability for ChannelEvent {
+    type Event = serde_json::Value;
+
+    const ID: &'static str = CHANNEL_ID;
+    const DESCRIPTOR_VERSION: &'static str = VERSION;
+}
+
+#[derive(Debug)]
+struct ChannelCodec;
+
+impl JsonCapabilityCodec for ChannelCodec {
+    fn capability_id(&self) -> &'static str {
+        CHANNEL_ID
+    }
+    fn descriptor_version(&self) -> &'static str {
+        VERSION
+    }
+    fn descriptor_digest(&self) -> &'static str {
+        CHANNEL_DIGEST
+    }
+    fn request_operations(&self) -> &'static [&'static str] {
+        &[]
+    }
+    fn stream_operations(&self) -> &'static [&'static str] {
+        &["chat"]
+    }
+    fn event_operations(&self) -> &'static [&'static str] {
+        &["notify"]
+    }
+
+    fn encode_request(
+        &self,
+        operation: &str,
+        _: &dyn Any,
+    ) -> Result<serde_json::Value, RuntimeFailure> {
+        Err(RuntimeFailure::UnknownOperation {
+            capability: CHANNEL_ID,
+            operation: operation.to_owned(),
+        })
+    }
+
+    fn decode_response(
+        &self,
+        operation: &str,
+        _: serde_json::Value,
+    ) -> Result<Box<dyn Any>, RuntimeFailure> {
+        Err(RuntimeFailure::UnknownOperation {
+            capability: CHANNEL_ID,
+            operation: operation.to_owned(),
+        })
+    }
+
+    fn decode_domain_error(
+        &self,
+        _: &str,
+        value: serde_json::Value,
+    ) -> Result<Box<dyn Any>, RuntimeFailure> {
+        Ok(Box::new(value))
+    }
+
+    fn encode_event(&self, _: &str, event: &dyn Any) -> Result<serde_json::Value, RuntimeFailure> {
+        event.downcast_ref::<serde_json::Value>().cloned().ok_or(
+            RuntimeFailure::ProtocolViolation {
+                capability: CHANNEL_ID,
+            },
+        )
+    }
+
+    fn encode_stream_open(
+        &self,
+        _: &str,
+        request: &dyn Any,
+    ) -> Result<serde_json::Value, RuntimeFailure> {
+        request.downcast_ref::<serde_json::Value>().cloned().ok_or(
+            RuntimeFailure::ProtocolViolation {
+                capability: CHANNEL_ID,
+            },
+        )
+    }
+
+    fn encode_stream_message(
+        &self,
+        _: &str,
+        message: &dyn Any,
+    ) -> Result<serde_json::Value, RuntimeFailure> {
+        message.downcast_ref::<serde_json::Value>().cloned().ok_or(
+            RuntimeFailure::ProtocolViolation {
+                capability: CHANNEL_ID,
+            },
+        )
+    }
+
+    fn decode_stream_message(
+        &self,
+        _: &str,
+        value: serde_json::Value,
+    ) -> Result<Box<dyn Any>, RuntimeFailure> {
+        Ok(Box::new(value))
+    }
+
+    fn decode_stream_domain_error(
         &self,
         _: &str,
         value: serde_json::Value,
@@ -397,6 +525,98 @@ fn execution_adapter_runs_authoring_v2_through_kernel_lifecycle() {
     ));
 }
 
+#[test]
+fn execution_adapter_exposes_authoring_v2_stream_and_event_handles() {
+    let source = fixture("v2-stream-event-child.ts");
+    let bundle = tempfile::tempdir().unwrap();
+    let entrypoint = bundle.path().join("plugin.js");
+    assert!(
+        Command::new(bun_binary())
+            .arg("build")
+            .arg("--target")
+            .arg("bun")
+            .arg("--outfile")
+            .arg(&entrypoint)
+            .arg(source)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let bytes = fs::read(&entrypoint).unwrap();
+    let digest = format!("sha256:{}", hex::encode(Sha256::digest(&bytes)));
+    let artifacts = ArtifactCatalog::new()
+        .with_artifact(
+            "channel",
+            ArtifactHandle::open(&entrypoint, &digest, bytes.len() as u64).unwrap(),
+        )
+        .unwrap();
+    let adapters = ExecutionAdapterCatalog::new()
+        .with_adapter(NativePluginRegistry::new().with_factory(EmptyConsumerFactory))
+        .unwrap()
+        .with_adapter(
+            BunAdapter::production(bun_binary())
+                .with_artifacts(artifacts)
+                .with_authoring_codec(ChannelCodec),
+        )
+        .unwrap();
+    let endpoint = CapabilityEndpointPlan::new(CHANNEL_ID, VERSION, ["chat", "notify"])
+        .with_stream_operation("chat")
+        .with_event_operation("notify")
+        .with_event_capacity(4)
+        .with_limits(0, 4);
+    let plan = AppComposition::new(
+        vec![
+            PluginInstancePlan::new("channel", "test.bun-channel")
+                .with_authoring(2, BUN_AUTHORING_RUNTIME_PROFILE)
+                .with_entrypoint("plugin")
+                .with_execution_class(ExecutionClassId::bun_child_process())
+                .with_capability(endpoint),
+            PluginInstancePlan::new("consumer", "test.echo-consumer")
+                .with_requirement(CapabilityRequirementPlan::one(CHANNEL_ID, VERSION)),
+        ],
+        vec![CapabilityBinding::new(
+            "consumer", CHANNEL_ID, VERSION, "channel",
+        )],
+    )
+    .resolve()
+    .unwrap();
+    let driver = DeterministicDriver::new();
+    let app = driver
+        .run(Kernel::start(plan, driver.clone(), adapters))
+        .unwrap();
+
+    let events = driver.run(
+        app.event_handle::<ChannelEvent>("consumer")
+            .unwrap()
+            .publish("notify", json!({"message": "ready"})),
+    );
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].admission(), EventAdmission::Accepted);
+
+    let stream = driver
+        .run(
+            app.stream_handle::<ChannelStream>("consumer")
+                .unwrap()
+                .open("chat", json!({"room": "general"})),
+        )
+        .unwrap()
+        .unwrap();
+    driver.run(stream.send(json!({"text": "hello"}))).unwrap();
+    assert!(matches!(
+        driver.run(stream.receive()),
+        Ok(StreamEvent::Message(message)) if message == json!({"text": "hello"})
+    ));
+    driver.run(stream.close_send()).unwrap();
+    assert!(matches!(
+        driver.run(stream.receive()),
+        Ok(StreamEvent::Terminal(Ok(())))
+    ));
+    assert!(matches!(
+        driver.run(app.shutdown(Duration::from_secs(1))),
+        lenso_kernel::ShutdownOutcome::Clean
+    ));
+}
+
 #[derive(Debug, Clone)]
 struct Callback {
     settlements: Arc<Mutex<Vec<Settlement>>>,
@@ -518,6 +738,109 @@ fn rust_host_and_typescript_child_complete_authenticated_duplex_execution() {
         })
         .expect("child should stop through its reserved control request");
     assert_eq!(stopped.hook, StopHookOutcome::NotDeclared);
+}
+
+#[test]
+fn rust_host_drives_typescript_event_and_stream_providers() {
+    let settlements = Arc::new(Mutex::new(Vec::new()));
+    let initialize = stream_event_initialization();
+    let host = BunAuthoringHost::start(
+        bun_binary(),
+        fixture("v2-stream-event-child.ts"),
+        initialize.clone(),
+        Callback {
+            settlements: settlements.clone(),
+        },
+    )
+    .expect("Stream/Event child should authenticate");
+    host.construct(ConstructParams {
+        session: initialize.identity.session.clone(),
+        lifecycle_scope_id: "construct-1".to_owned(),
+        remaining_budget_nanos: "10000000000".to_owned(),
+    })
+    .expect("Stream/Event child should construct");
+
+    let event = EventPublishParams {
+        session: initialize.identity.session.clone(),
+        correlation_id: "60".to_owned(),
+        endpoint_id: "endpoint-0".to_owned(),
+        capability_id: CHANNEL_ID.to_owned(),
+        descriptor_version: VERSION.to_owned(),
+        descriptor_digest: CHANNEL_DIGEST.to_owned(),
+        operation: "notify".to_owned(),
+        scope: test_scope("event-60"),
+        event: json!({"message": "ready"}),
+    };
+    assert_eq!(
+        host.publish_event(&event).unwrap().outcome,
+        EventPublishOutcome::Accepted
+    );
+
+    let open = StreamOpenParams {
+        session: initialize.identity.session.clone(),
+        correlation_id: "61".to_owned(),
+        endpoint_id: "endpoint-0".to_owned(),
+        capability_id: CHANNEL_ID.to_owned(),
+        descriptor_version: VERSION.to_owned(),
+        descriptor_digest: CHANNEL_DIGEST.to_owned(),
+        operation: "chat".to_owned(),
+        scope: test_scope("stream-61"),
+        request: json!({"room": "general"}),
+    };
+    let stream_id = match host.open_stream(&open).unwrap().outcome {
+        StreamOpenOutcome::Opened { stream_id } => stream_id,
+        outcome => panic!("expected opened Stream, got {outcome:?}"),
+    };
+    assert_eq!(settlements.lock().unwrap().len(), 1);
+    let send = StreamSendParams {
+        session: initialize.identity.session.clone(),
+        correlation_id: "62".to_owned(),
+        stream_id: stream_id.clone(),
+        sequence: "0".to_owned(),
+        message: json!({"text": "hello"}),
+    };
+    assert_eq!(
+        host.send_stream(&send).unwrap().outcome,
+        StreamActionOutcome::Accepted
+    );
+    let receive = StreamReceiveParams {
+        session: initialize.identity.session.clone(),
+        correlation_id: "63".to_owned(),
+        stream_id: stream_id.clone(),
+    };
+    assert!(matches!(
+        host.receive_stream(&receive).unwrap().outcome,
+        StreamReceiveOutcome::Message { sequence, message }
+            if sequence == "0" && message == json!({"text": "hello"})
+    ));
+    let close = StreamReceiveParams {
+        correlation_id: "64".to_owned(),
+        ..receive
+    };
+    assert_eq!(
+        host.close_stream_send(&close).unwrap().outcome,
+        StreamActionOutcome::Accepted
+    );
+    let terminal = StreamReceiveParams {
+        correlation_id: "65".to_owned(),
+        ..close
+    };
+    assert!(matches!(
+        host.receive_stream(&terminal).unwrap().outcome,
+        StreamReceiveOutcome::Terminal {
+            outcome: StreamTerminalOutcome::Success
+        }
+    ));
+    assert_eq!(
+        host.stop(StopParams {
+            session: initialize.identity.session,
+            cleanup_scope_id: "cleanup-1".to_owned(),
+            remaining_budget_nanos: "1000000000".to_owned(),
+        })
+        .unwrap()
+        .hook,
+        StopHookOutcome::NotDeclared
+    );
 }
 
 #[test]
@@ -688,6 +1011,20 @@ fn blocking_initialization() -> InitializeParams {
     initialize
 }
 
+fn stream_event_initialization() -> InitializeParams {
+    let mut initialize = initialization();
+    "channel".clone_into(&mut initialize.identity.plugin_instance);
+    initialize.required_declarations.clear();
+    initialize.routes.clear();
+    initialize.provided_endpoints = vec![ProvidedEndpoint {
+        endpoint_id: "endpoint-0".to_owned(),
+        capability_id: CHANNEL_ID.to_owned(),
+        descriptor_version: VERSION.to_owned(),
+        descriptor_digest: CHANNEL_DIGEST.to_owned(),
+    }];
+    initialize
+}
+
 fn blocking_invocation(initialize: &InitializeParams, correlation_id: &str) -> InvokeParams {
     let endpoint = &initialize.provided_endpoints[0];
     InvokeParams {
@@ -727,6 +1064,16 @@ fn invocation(initialize: &InitializeParams, correlation_id: &str) -> InvokePara
             extensions: Vec::new(),
         },
         payload: json!({ "document": "guide" }),
+    }
+}
+
+fn test_scope(scope_id: &str) -> InvocationScope {
+    InvocationScope {
+        scope_id: scope_id.to_owned(),
+        parent_scope_id: None,
+        remaining_budget_nanos: "5000000000".to_owned(),
+        permissions: Vec::new(),
+        extensions: Vec::new(),
     }
 }
 
