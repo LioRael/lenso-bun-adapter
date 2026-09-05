@@ -58,12 +58,13 @@ Custom Capability contracts can still be generated during authoring. Official
 Capability projections belong in `@lenso/bun`, not beside Rust crate source.
 
 The Bun runtime accepts generated Request, bidirectional Stream, and Event Providers,
-alongside per-Instance construction, resolved Request dependency clients, and
+alongside per-Instance construction, resolved Request, Stream, and Event dependency clients, and
 bounded stop hooks over the production JSON-RPC loopback wire. Stream sessions
 support ordered messages, half-close, terminal outcomes, and cancellation;
-Event publication awaits the handler before acknowledging bounded admission. Outbound
-Stream/Event dependency clients and the equivalent Wasm authoring projection remain
-fail-closed. Framed stdio remains a conformance and benchmark wire.
+Event publication awaits the handler before acknowledging bounded admission.
+Outbound dependencies use exact Plan-selected routes and stable requirement
+identities for all three interaction kinds. Framed stdio remains a conformance
+and benchmark wire.
 
 The source was extracted from `LioRael/lenso` at monorepo commit
 `67d21499548d07e92c2f6529d7c8345e58c067d9` under ADR 0064. Imported subtrees
