@@ -24,16 +24,20 @@ use lenso_kernel::{
 use lenso_process_protocol::{
     VALUE_PROFILE,
     authoring::{
-        AuthoringLimits, CancelParams, ConstructParams, FactoryOutcome, InitializeParams,
-        InvocationOutcome, InvocationResult, InvocationScope, OutboundCallParams,
-        OutboundCallResult, ProvidedEndpoint, RequirementCardinality, RequirementDeclaration,
-        RouteDescriptor, RuntimeFailure as WireFailure, SessionIdentity, Settlement,
-        SettlementState, StopHookOutcome, StopParams,
+        AuthoringLimits, CancelParams, ConstructParams, EventPublishOutcome, EventPublishParams,
+        FactoryOutcome, InitializeParams, InvocationOutcome, InvocationResult, InvocationScope,
+        OutboundCallParams, OutboundCallResult, ProvidedEndpoint, RequirementCardinality,
+        RequirementDeclaration, RouteDescriptor, RuntimeFailure as WireFailure, SessionIdentity,
+        Settlement, SettlementState, StopHookOutcome, StopParams, StreamActionOutcome,
+        StreamCancelParams, StreamCloseSendParams, StreamOpenOutcome, StreamOpenParams,
+        StreamReceiveOutcome, StreamReceiveParams, StreamSendParams, StreamTerminalOutcome,
     },
 };
 use lenso_runtime_codec::{
-    ArtifactCatalog, ArtifactHandle, JsonCapabilityCodec, JsonHostImports, JsonInvocationOutcome,
-    JsonRequestTransport, codecs_for_instance, codecs_for_requirements, json_request_endpoints,
+    ArtifactCatalog, ArtifactHandle, JsonCapabilityCodec, JsonEventTransport, JsonHostImports,
+    JsonInvocationOutcome, JsonRequestTransport, JsonStreamItem, JsonStreamSessionTransport,
+    JsonStreamTransport, codecs_for_instance, codecs_for_requirements, json_event_endpoints,
+    json_request_endpoints, json_stream_endpoints,
 };
 use sha2::{Digest as _, Sha256};
 
@@ -43,6 +47,7 @@ use crate::{
 
 const EXECUTION_CLASS: &str = "bun-child-process";
 static NEXT_BUN_SESSION: AtomicU64 = AtomicU64::new(1);
+static NEXT_BUN_STREAM_ACTION: AtomicU64 = AtomicU64::new(1);
 
 type SettlementSenders = Arc<Mutex<BTreeMap<String, oneshot::Sender<Settlement>>>>;
 type SharedScopes = Arc<Mutex<BTreeMap<String, InvocationScope>>>;
@@ -54,11 +59,6 @@ pub(super) fn prepare_instance(
     codecs: &BTreeMap<String, Rc<dyn JsonCapabilityCodec>>,
     instance: &PluginInstancePlan,
 ) -> Result<PreparedNativePlugin, RuntimeFailure> {
-    if instance.provided_capabilities().iter().any(|capability| {
-        !capability.stream_operations().is_empty() || !capability.event_operations().is_empty()
-    }) {
-        return invalid("Bun Authoring V2 currently supports Request Capability endpoints");
-    }
     let provided = codecs_for_instance(instance, codecs)?;
     let required = codecs_for_requirements(instance, codecs)?;
     for codec in provided.iter().chain(&required) {
@@ -73,10 +73,13 @@ pub(super) fn prepare_instance(
         imports,
         config.clone(),
     )?;
-    let endpoints = json_request_endpoints(generation.clone(), provided);
-    Ok(PreparedNativePlugin::with_endpoints(
-        endpoints,
-        Vec::new(),
+    let requests = json_request_endpoints(generation.clone(), provided.clone());
+    let streams = json_stream_endpoints(generation.clone(), provided.clone());
+    let events = json_event_endpoints(generation.clone(), provided);
+    Ok(PreparedNativePlugin::with_all_endpoints(
+        requests,
+        streams,
+        events,
         BunLifecycleV2 { generation },
     ))
 }
@@ -435,6 +438,359 @@ impl JsonRequestTransport for BunGenerationV2 {
                 }
             }
         })
+    }
+}
+
+impl JsonEventTransport for BunGenerationV2 {
+    fn publish(
+        self: Rc<Self>,
+        capability: String,
+        operation: String,
+        event_json: String,
+        context: InvocationContext,
+    ) -> futures::future::LocalBoxFuture<'static, Result<(), RuntimeFailure>> {
+        Box::pin(async move {
+            let initialization = self
+                .initialization
+                .borrow()
+                .clone()
+                .ok_or(RuntimeFailure::AdmissionClosed)?;
+            let host = self
+                .host
+                .borrow()
+                .clone()
+                .ok_or(RuntimeFailure::AdmissionClosed)?;
+            let endpoint = self
+                .endpoints
+                .get(&capability)
+                .ok_or_else(|| protocol("unknown Bun Event endpoint"))?;
+            let params = EventPublishParams {
+                session: self.identity.session.clone(),
+                correlation_id: context.request_id().to_string(),
+                endpoint_id: endpoint.endpoint_id.clone(),
+                capability_id: capability,
+                descriptor_version: endpoint.descriptor_version.clone(),
+                descriptor_digest: endpoint.descriptor_digest.clone(),
+                operation,
+                scope: invocation_scope(&context)?,
+                event: serde_json::from_str(&event_json)
+                    .map_err(|_| protocol("invalid Bun Event payload"))?,
+            };
+            params
+                .validate_against(&initialization)
+                .map_err(|error| protocol(error.to_string()))?;
+            let scope_id = params.scope.scope_id.clone();
+            self.contexts.borrow_mut().insert(scope_id.clone(), context);
+            self.shared_scopes
+                .lock()
+                .expect("Bun scopes")
+                .insert(scope_id.clone(), params.scope.clone());
+            let request = params.clone();
+            let response = spawn_rpc("event-publish", move || host.publish_event(&request))?
+                .await
+                .map_err(|_| unavailable());
+            self.retire_lifecycle(&scope_id);
+            let result = response??;
+            match result.outcome {
+                EventPublishOutcome::Accepted => Ok(()),
+                EventPublishOutcome::Runtime { failure } => Err(from_wire_failure(failure)),
+            }
+        })
+    }
+}
+
+impl JsonStreamTransport for BunGenerationV2 {
+    #[allow(clippy::too_many_lines)]
+    fn open(
+        self: Rc<Self>,
+        capability: String,
+        operation: String,
+        request_json: String,
+        context: InvocationContext,
+    ) -> lenso_runtime_codec::JsonStreamOpenFuture {
+        Box::pin(async move {
+            let initialization = self
+                .initialization
+                .borrow()
+                .clone()
+                .ok_or(RuntimeFailure::AdmissionClosed)?;
+            let host = self
+                .host
+                .borrow()
+                .clone()
+                .ok_or(RuntimeFailure::AdmissionClosed)?;
+            let endpoint = self
+                .endpoints
+                .get(&capability)
+                .ok_or_else(|| protocol("unknown Bun Stream endpoint"))?;
+            let correlation_id = context.request_id().to_string();
+            let scope = invocation_scope(&context)?;
+            let params = StreamOpenParams {
+                session: self.identity.session.clone(),
+                correlation_id: correlation_id.clone(),
+                endpoint_id: endpoint.endpoint_id.clone(),
+                capability_id: capability.clone(),
+                descriptor_version: endpoint.descriptor_version.clone(),
+                descriptor_digest: endpoint.descriptor_digest.clone(),
+                operation,
+                scope: scope.clone(),
+                request: serde_json::from_str(&request_json)
+                    .map_err(|_| protocol("invalid Bun Stream open payload"))?,
+            };
+            params
+                .validate_against(&initialization)
+                .map_err(|error| protocol(error.to_string()))?;
+            let (settlement_sender, settlement_receiver) = oneshot::channel();
+            {
+                let mut settlements = self.settlements.lock().expect("Bun settlements");
+                if settlements.len() >= self.config.request_queue_capacity {
+                    return Err(RuntimeFailure::ResourceExhausted {
+                        capability: EXECUTION_CLASS,
+                        operation: "stream.open".to_owned(),
+                    });
+                }
+                if settlements
+                    .insert(correlation_id.clone(), settlement_sender)
+                    .is_some()
+                {
+                    return Err(protocol("Bun Stream open reused a correlation id"));
+                }
+            }
+            self.contexts
+                .borrow_mut()
+                .insert(scope.scope_id.clone(), context.clone());
+            self.shared_scopes
+                .lock()
+                .expect("Bun scopes")
+                .insert(scope.scope_id.clone(), scope.clone());
+            let request = params.clone();
+            let rpc_host = host.clone();
+            let mut response = spawn_rpc("stream-open", move || rpc_host.open_stream(&request))?
+                .boxed_local()
+                .fuse();
+            let mut settlement = settlement_receiver.boxed_local().fuse();
+            let mut cancelled = context.cancellation().cancelled().boxed_local().fuse();
+            let mut outcome = None;
+            let mut settled = None;
+            let mut cancellation_sent = false;
+            loop {
+                select! {
+                    result = response => {
+                        match result {
+                            Ok(Ok(result)) => outcome = Some(result.outcome),
+                            Ok(Err(error)) => {
+                                self.retire_invocation(&correlation_id, &scope.scope_id);
+                                return Err(error);
+                            }
+                            Err(_) => {
+                                self.retire_invocation(&correlation_id, &scope.scope_id);
+                                return Err(unavailable());
+                            }
+                        }
+                        response = futures::future::pending().boxed_local().fuse();
+                    },
+                    result = settlement => {
+                        let Ok(value) = result else {
+                            self.retire_invocation(&correlation_id, &scope.scope_id);
+                            return Err(unavailable());
+                        };
+                        if value.validate_for(&self.identity).is_err()
+                            || value.scope_id != scope.scope_id
+                            || value.correlation_id != correlation_id
+                        {
+                            self.retire_invocation(&correlation_id, &scope.scope_id);
+                            self.terminate();
+                            return Err(protocol("Bun Stream open settlement identity mismatch"));
+                        }
+                        settled = Some(value.state);
+                        settlement = futures::future::pending().boxed_local().fuse();
+                    },
+                    () = cancelled => {
+                        cancellation_sent = true;
+                        let cancel = CancelParams {
+                            session: self.identity.session.clone(),
+                            scope_id: scope.scope_id.clone(),
+                            correlation_id: correlation_id.clone(),
+                            reason: "caller cancelled the Stream open".to_owned(),
+                        };
+                        let cancel_host = host.clone();
+                        let identity = cancel.clone();
+                        let _ = thread::Builder::new()
+                            .name(format!("lenso-bun-v2-stream-open-cancel-{correlation_id}"))
+                            .spawn(move || match cancel_host.cancel(cancel) {
+                                Ok(ack) if ack.validate_for(&identity).is_ok() => {}
+                                _ => cancel_host.terminate(),
+                            });
+                        arm_termination(
+                            host.clone(),
+                            self.settlements.clone(),
+                            correlation_id.clone(),
+                            self.config.cancellation_settlement_timeout,
+                        );
+                        cancelled = futures::future::pending().boxed_local().fuse();
+                    }
+                }
+                let (Some(outcome), Some(state)) = (outcome.take(), settled) else {
+                    continue;
+                };
+                if cancellation_sent && state != SettlementState::Completed {
+                    self.retire_invocation(&correlation_id, &scope.scope_id);
+                    return Err(RuntimeFailure::Cancelled {
+                        request_id: context.request_id(),
+                    });
+                }
+                return match outcome {
+                    StreamOpenOutcome::Opened { stream_id } => {
+                        self.settlements
+                            .lock()
+                            .expect("Bun settlements")
+                            .remove(&correlation_id);
+                        Ok(Ok(Rc::new(BunStreamSessionV2 {
+                            host: self
+                                .host
+                                .borrow()
+                                .clone()
+                                .ok_or(RuntimeFailure::AdmissionClosed)?,
+                            generation: self.clone(),
+                            identity: self.identity.clone(),
+                            stream_id,
+                            scope_id: scope.scope_id,
+                            retired: AtomicBool::new(false),
+                            next_send_sequence: AtomicU64::new(0),
+                        })
+                            as Rc<dyn JsonStreamSessionTransport>))
+                    }
+                    StreamOpenOutcome::Domain { error } => {
+                        self.retire_invocation(&correlation_id, &scope.scope_id);
+                        Ok(Err(error))
+                    }
+                    StreamOpenOutcome::Runtime { failure } => {
+                        self.retire_invocation(&correlation_id, &scope.scope_id);
+                        Err(from_wire_failure(failure))
+                    }
+                };
+            }
+        })
+    }
+}
+
+#[derive(Debug)]
+struct BunStreamSessionV2 {
+    host: Arc<BunAuthoringHost>,
+    generation: Rc<BunGenerationV2>,
+    identity: SessionIdentity,
+    stream_id: String,
+    scope_id: String,
+    retired: AtomicBool,
+    next_send_sequence: AtomicU64,
+}
+
+impl BunStreamSessionV2 {
+    fn action() -> String {
+        NEXT_BUN_STREAM_ACTION
+            .fetch_add(1, Ordering::Relaxed)
+            .to_string()
+    }
+
+    fn receive_params(&self) -> StreamReceiveParams {
+        StreamReceiveParams {
+            session: self.identity.session.clone(),
+            correlation_id: Self::action(),
+            stream_id: self.stream_id.clone(),
+        }
+    }
+
+    fn retire(&self) {
+        if !self.retired.swap(true, Ordering::AcqRel) {
+            self.generation.retire_lifecycle(&self.scope_id);
+        }
+    }
+}
+
+impl JsonStreamSessionTransport for BunStreamSessionV2 {
+    fn send(
+        self: Rc<Self>,
+        message_json: String,
+    ) -> futures::future::LocalBoxFuture<'static, Result<(), RuntimeFailure>> {
+        Box::pin(async move {
+            let params = StreamSendParams {
+                session: self.identity.session.clone(),
+                correlation_id: Self::action(),
+                stream_id: self.stream_id.clone(),
+                sequence: self.next_send_sequence.load(Ordering::Acquire).to_string(),
+                message: serde_json::from_str(&message_json)
+                    .map_err(|_| protocol("invalid Bun Stream message"))?,
+            };
+            let host = self.host.clone();
+            let result = spawn_rpc("stream-send", move || host.send_stream(&params))?
+                .await
+                .map_err(|_| unavailable())??;
+            match result.outcome {
+                StreamActionOutcome::Accepted => {
+                    self.next_send_sequence.fetch_add(1, Ordering::Release);
+                    Ok(())
+                }
+                StreamActionOutcome::Runtime { failure } => Err(from_wire_failure(failure)),
+            }
+        })
+    }
+
+    fn receive(
+        self: Rc<Self>,
+    ) -> futures::future::LocalBoxFuture<'static, Result<JsonStreamItem, RuntimeFailure>> {
+        Box::pin(async move {
+            let params = self.receive_params();
+            let host = self.host.clone();
+            let result = spawn_rpc("stream-receive", move || host.receive_stream(&params))?
+                .await
+                .map_err(|_| unavailable())??;
+            match result.outcome {
+                StreamReceiveOutcome::Message { message, .. } => {
+                    Ok(JsonStreamItem::Message(message))
+                }
+                StreamReceiveOutcome::PeerHalfClosed => Ok(JsonStreamItem::PeerHalfClosed),
+                StreamReceiveOutcome::Terminal {
+                    outcome: StreamTerminalOutcome::Success,
+                } => {
+                    self.retire();
+                    Ok(JsonStreamItem::Terminal(Ok(())))
+                }
+                StreamReceiveOutcome::Terminal {
+                    outcome: StreamTerminalOutcome::Domain { error },
+                } => {
+                    self.retire();
+                    Ok(JsonStreamItem::Terminal(Err(error)))
+                }
+                StreamReceiveOutcome::Runtime { failure } => Err(from_wire_failure(failure)),
+            }
+        })
+    }
+
+    fn close_send(
+        self: Rc<Self>,
+    ) -> futures::future::LocalBoxFuture<'static, Result<(), RuntimeFailure>> {
+        Box::pin(async move {
+            let params: StreamCloseSendParams = self.receive_params();
+            let host = self.host.clone();
+            let result = spawn_rpc("stream-close-send", move || host.close_stream_send(&params))?
+                .await
+                .map_err(|_| unavailable())??;
+            match result.outcome {
+                StreamActionOutcome::Accepted => Ok(()),
+                StreamActionOutcome::Runtime { failure } => Err(from_wire_failure(failure)),
+            }
+        })
+    }
+
+    fn cancel(&self) {
+        self.retire();
+        let params: StreamCancelParams = self.receive_params();
+        let host = self.host.clone();
+        let _ = thread::Builder::new().name(format!("lenso-bun-v2-stream-cancel-{}", self.stream_id)).spawn(move || {
+            if !matches!(host.cancel_stream(&params), Ok(result) if result.outcome == StreamActionOutcome::Accepted) {
+                host.terminate();
+            }
+        });
     }
 }
 
@@ -1091,12 +1447,6 @@ fn from_wire_failure(value: WireFailure) -> RuntimeFailure {
             detail: format!("{other:?}"),
         },
     }
-}
-
-fn invalid(detail: impl Into<String>) -> Result<PreparedNativePlugin, RuntimeFailure> {
-    Err(RuntimeFailure::InvalidResolvedPlan {
-        detail: detail.into(),
-    })
 }
 
 fn protocol(detail: impl Into<String>) -> RuntimeFailure {

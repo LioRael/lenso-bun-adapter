@@ -21,9 +21,11 @@ use lenso_kernel::RuntimeFailure;
 use lenso_process_protocol::{
     AuthoringHandshakeProofInput,
     authoring::{
-        CancelAck, CancelParams, ConstructParams, ConstructedResult, InitializeParams,
-        InvocationResult, InvokeParams, OutboundCallParams, OutboundCallResult, Settlement,
-        StopParams, StoppedResult,
+        CancelAck, CancelParams, ConstructParams, ConstructedResult, EventPublishParams,
+        EventPublishResult, InitializeParams, InvocationResult, InvokeParams, OutboundCallParams,
+        OutboundCallResult, Settlement, StopParams, StoppedResult, StreamActionResult,
+        StreamCancelParams, StreamCloseSendParams, StreamOpenParams, StreamOpenResult,
+        StreamReceiveParams, StreamReceiveResult, StreamSendParams,
     },
     authoring_callback_proof_message, authoring_child_proof_message,
     authoring_handshake_proof_payload, authoring_host_proof_message,
@@ -199,6 +201,78 @@ impl BunAuthoringHost {
             .validate_against(&self.initialize)
             .map_err(protocol_failure)?;
         let result: InvocationResult = rpc(&self.client, "lenso.invoke", params)?;
+        result.validate_for(params).map_err(protocol_failure)?;
+        Ok(result)
+    }
+
+    pub fn publish_event(
+        &self,
+        params: &EventPublishParams,
+    ) -> Result<EventPublishResult, RuntimeFailure> {
+        params
+            .validate_against(&self.initialize)
+            .map_err(protocol_failure)?;
+        let result: EventPublishResult = rpc(&self.client, "lenso.event.publish", params)?;
+        result.validate_for(params).map_err(protocol_failure)?;
+        Ok(result)
+    }
+
+    pub fn open_stream(
+        &self,
+        params: &StreamOpenParams,
+    ) -> Result<StreamOpenResult, RuntimeFailure> {
+        params
+            .validate_against(&self.initialize)
+            .map_err(protocol_failure)?;
+        let result: StreamOpenResult = rpc(&self.client, "lenso.stream.open", params)?;
+        result.validate_for(params).map_err(protocol_failure)?;
+        Ok(result)
+    }
+
+    pub fn send_stream(
+        &self,
+        params: &StreamSendParams,
+    ) -> Result<StreamActionResult, RuntimeFailure> {
+        params
+            .validate_for(&self.initialize.identity)
+            .map_err(protocol_failure)?;
+        let result: StreamActionResult = rpc(&self.client, "lenso.stream.send", params)?;
+        result.validate_for_send(params).map_err(protocol_failure)?;
+        Ok(result)
+    }
+
+    pub fn receive_stream(
+        &self,
+        params: &StreamReceiveParams,
+    ) -> Result<StreamReceiveResult, RuntimeFailure> {
+        params
+            .validate_for(&self.initialize.identity)
+            .map_err(protocol_failure)?;
+        let result: StreamReceiveResult = rpc(&self.client, "lenso.stream.receive", params)?;
+        result.validate_for(params).map_err(protocol_failure)?;
+        Ok(result)
+    }
+
+    pub fn close_stream_send(
+        &self,
+        params: &StreamCloseSendParams,
+    ) -> Result<StreamActionResult, RuntimeFailure> {
+        params
+            .validate_for(&self.initialize.identity)
+            .map_err(protocol_failure)?;
+        let result: StreamActionResult = rpc(&self.client, "lenso.stream.close_send", params)?;
+        result.validate_for(params).map_err(protocol_failure)?;
+        Ok(result)
+    }
+
+    pub fn cancel_stream(
+        &self,
+        params: &StreamCancelParams,
+    ) -> Result<StreamActionResult, RuntimeFailure> {
+        params
+            .validate_for(&self.initialize.identity)
+            .map_err(protocol_failure)?;
+        let result: StreamActionResult = rpc(&self.client, "lenso.stream.cancel", params)?;
         result.validate_for(params).map_err(protocol_failure)?;
         Ok(result)
     }

@@ -49,11 +49,12 @@ the process handshake, or implement the transport.
 Custom Capability contracts can still be generated during authoring. Official
 Capability projections belong in `@lenso/bun`, not beside Rust crate source.
 
-The current SDK surface supports request Capabilities, per-Instance construction,
-resolved dependency clients, and bounded stop hooks over the production
-JSON-RPC loopback wire. Stream and Event descriptors fail closed until their
-typed sessions are available. Framed stdio remains a conformance and benchmark
-wire, not a user-facing authoring API.
+The SDK accepts generated Request, bidirectional Stream, and Event Providers,
+alongside per-Instance construction, resolved Request dependency clients, and
+bounded stop hooks over the production JSON-RPC loopback wire. Stream sessions
+support ordered messages, half-close, terminal outcomes, and cancellation;
+Event publication acknowledges bounded admission. Framed stdio remains a
+conformance and benchmark wire, not a user-facing authoring API.
 
 The source was extracted from `LioRael/lenso` at monorepo commit
 `67d21499548d07e92c2f6529d7c8345e58c067d9` under ADR 0064. Imported subtrees
