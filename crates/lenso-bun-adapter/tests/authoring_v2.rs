@@ -5,7 +5,7 @@ use std::{
     process::Command,
     rc::Rc,
     sync::{
-        Arc, Mutex,
+        Arc, Condvar, Mutex,
         atomic::{AtomicUsize, Ordering},
     },
     thread,
@@ -422,6 +422,40 @@ impl BunAuthoringCallback for Callback {
     }
 }
 
+#[derive(Debug, Clone)]
+struct BlockingCallback {
+    entered: Arc<(Mutex<bool>, Condvar)>,
+    release: Arc<(Mutex<bool>, Condvar)>,
+    settlements: Arc<Mutex<Vec<Settlement>>>,
+}
+
+impl BunAuthoringCallback for BlockingCallback {
+    fn call(&self, params: OutboundCallParams) -> Result<OutboundCallResult, RuntimeFailure> {
+        {
+            let (entered, changed) = &*self.entered;
+            *entered.lock().unwrap() = true;
+            changed.notify_all();
+        }
+        let (released, changed) = &*self.release;
+        let mut released = released.lock().unwrap();
+        while !*released {
+            released = changed.wait(released).unwrap();
+        }
+        Ok(OutboundCallResult {
+            session: params.session,
+            correlation_id: params.correlation_id,
+            outcome: InvocationOutcome::Success {
+                value: json!({ "text": "released" }),
+            },
+        })
+    }
+
+    fn settled(&self, settlement: Settlement) -> Result<(), RuntimeFailure> {
+        self.settlements.lock().unwrap().push(settlement);
+        Ok(())
+    }
+}
+
 #[test]
 fn rust_host_and_typescript_child_complete_authenticated_duplex_execution() {
     let settlements = Arc::new(Mutex::new(Vec::new()));
@@ -484,6 +518,61 @@ fn rust_host_and_typescript_child_complete_authenticated_duplex_execution() {
         })
         .expect("child should stop through its reserved control request");
     assert_eq!(stopped.hook, StopHookOutcome::NotDeclared);
+}
+
+#[test]
+fn settlement_progresses_while_an_unrelated_outbound_callback_is_blocked() {
+    let entered = Arc::new((Mutex::new(false), Condvar::new()));
+    let release = Arc::new((Mutex::new(false), Condvar::new()));
+    let settlements = Arc::new(Mutex::new(Vec::new()));
+    let initialize = initialization();
+    let host = Arc::new(
+        BunAuthoringHost::start(
+            bun_binary(),
+            fixture("v2-child.ts"),
+            initialize.clone(),
+            BlockingCallback {
+                entered: entered.clone(),
+                release: release.clone(),
+                settlements: settlements.clone(),
+            },
+        )
+        .expect("Authoring Host should complete mutual proof"),
+    );
+    host.construct(ConstructParams {
+        session: initialize.identity.session.clone(),
+        lifecycle_scope_id: "construct-1".to_owned(),
+        remaining_budget_nanos: "10000000000".to_owned(),
+    })
+    .expect("child should construct");
+
+    let first_host = host.clone();
+    let first_params = invocation(&initialize, "50");
+    let first = thread::spawn(move || first_host.invoke(&first_params));
+    {
+        let (entered, changed) = &*entered;
+        let mut entered = entered.lock().unwrap();
+        while !*entered {
+            entered = changed.wait(entered).unwrap();
+        }
+    }
+
+    let second = host
+        .invoke(&invocation(&initialize, "51"))
+        .expect("the overlapping invocation should settle independently");
+    assert_eq!(
+        second.outcome,
+        InvocationOutcome::Domain {
+            error: json!("already_running")
+        }
+    );
+    {
+        let (released, changed) = &*release;
+        *released.lock().unwrap() = true;
+        changed.notify_all();
+    }
+    assert!(first.join().unwrap().is_ok());
+    assert_eq!(settlements.lock().unwrap().len(), 2);
 }
 
 #[test]
@@ -617,6 +706,27 @@ fn blocking_invocation(initialize: &InitializeParams, correlation_id: &str) -> I
             extensions: Vec::new(),
         },
         payload: json!({}),
+    }
+}
+
+fn invocation(initialize: &InitializeParams, correlation_id: &str) -> InvokeParams {
+    let endpoint = &initialize.provided_endpoints[0];
+    InvokeParams {
+        session: initialize.identity.session.clone(),
+        correlation_id: correlation_id.to_owned(),
+        endpoint_id: endpoint.endpoint_id.clone(),
+        capability_id: endpoint.capability_id.clone(),
+        descriptor_version: endpoint.descriptor_version.clone(),
+        descriptor_digest: endpoint.descriptor_digest.clone(),
+        operation: "sync".to_owned(),
+        scope: InvocationScope {
+            scope_id: format!("invoke-{correlation_id}"),
+            parent_scope_id: None,
+            remaining_budget_nanos: "5000000000".to_owned(),
+            permissions: Vec::new(),
+            extensions: Vec::new(),
+        },
+        payload: json!({ "document": "guide" }),
     }
 }
 

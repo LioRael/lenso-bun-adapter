@@ -400,13 +400,32 @@ async fn handle_callback(
     headers: HeaderMap,
     Json(request): Json<RpcRequest>,
 ) -> (StatusCode, Json<RpcResponse>) {
-    let result = dispatch_callback(&state, &headers, &request);
+    let RpcRequest {
+        jsonrpc,
+        id,
+        method,
+        params,
+    } = request;
+    let result = tokio::task::spawn_blocking(move || {
+        dispatch_callback(
+            &state,
+            &headers,
+            &RpcRequest {
+                jsonrpc,
+                id: Value::Null,
+                method,
+                params,
+            },
+        )
+    })
+    .await
+    .unwrap_or_else(|error| Err(format!("Bun Authoring callback worker failed: {error}")));
     match result {
         Ok(result) => (
             StatusCode::OK,
             Json(RpcResponse {
                 jsonrpc: "2.0",
-                id: request.id,
+                id,
                 result: Some(result),
                 error: None,
             }),
@@ -415,7 +434,7 @@ async fn handle_callback(
             StatusCode::UNAUTHORIZED,
             Json(RpcResponse {
                 jsonrpc: "2.0",
-                id: request.id,
+                id,
                 result: None,
                 error: Some(RpcError {
                     code: -32602,

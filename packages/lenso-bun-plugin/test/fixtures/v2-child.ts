@@ -45,11 +45,11 @@ const source = dependency({
 
 const definition = definePlugin({
   dependencies: { source },
-  create: ({ dependencies }) => ({ source: dependencies.source }),
+  create: ({ dependencies }) => ({ source: dependencies.source, running: false }),
   providers: [
     provider(
       descriptor(SYNC_ID, SYNC_DIGEST, ["sync"]),
-      (instance: { readonly source: StoreClient }) => ({
+      (instance: { readonly source: StoreClient; running: boolean }) => ({
         descriptor: descriptor(SYNC_ID, SYNC_DIGEST, ["sync"]),
         invokeRequest(operation, context, payload) {
           if (operation !== "sync") {
@@ -58,7 +58,13 @@ const definition = definePlugin({
               failure: { kind: "unknown_operation" },
             });
           }
-          return instance.source.read(context as BunInvocationContext, payload);
+          if (instance.running) {
+            return Promise.resolve({ kind: "domain", value: "already_running" });
+          }
+          instance.running = true;
+          return instance.source
+            .read(context as BunInvocationContext, payload)
+            .finally(() => { instance.running = false; });
         },
       }),
     ),
