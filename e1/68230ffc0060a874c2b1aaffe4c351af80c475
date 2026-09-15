@@ -1,0 +1,35 @@
+packages/lenso-bun/capabilities.lock.json
+  s_3724267b9ee00e::t_68ca7bbbe86370 267-277
+packages/lenso-bun/contracts/websocket-endpoint/capability.json
+  s_3724267b9ee00e::t_1d61076ea587ac 1-22
+packages/lenso-bun/contracts/websocket-endpoint/schemas/connect-error.schema.json
+  s_3724267b9ee00e::t_c2e081358f7c19 1-14
+packages/lenso-bun/contracts/websocket-endpoint/schemas/connect-frame.schema.json
+  s_3724267b9ee00e::t_025e9b852031b8 1-40
+packages/lenso-bun/contracts/websocket-endpoint/schemas/connect-open.schema.json
+  s_3724267b9ee00e::t_6ef8d54568635d 1-99
+packages/lenso-bun/contracts/websocket-endpoint/schemas/describe-error.schema.json
+  s_3724267b9ee00e::t_d513d9fcd8479c 1-4
+packages/lenso-bun/contracts/websocket-endpoint/schemas/describe-request.schema.json
+  s_3724267b9ee00e::t_7dac7bf9d60d9c 1-6
+packages/lenso-bun/contracts/websocket-endpoint/schemas/describe-response.schema.json
+  s_3724267b9ee00e::t_6120f3ba6396c2 1-31
+packages/lenso-bun/src/capabilities/websocket-endpoint.ts
+  s_3724267b9ee00e::t_433d684f47a097 1-448
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "e168230ffc0060a874c2b1aaffe4c351af80c475",
+  "prompts": {},
+  "sessions": {
+    "s_3724267b9ee00e": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a09863-bdc5-7501-9f17-8276e89fcd6d",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "LioRael <leo@lenso.dev>"
+    }
+  }
+}
