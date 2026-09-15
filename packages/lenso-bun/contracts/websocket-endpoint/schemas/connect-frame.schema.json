@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": [
+    "kind"
+  ],
+  "properties": {
+    "kind": {
+      "type": "string",
+      "enum": [
+        "accept",
+        "text",
+        "binary",
+        "close"
+      ]
+    },
+    "protocol": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "text": {
+      "type": "string"
+    },
+    "body": {
+      "type": "string",
+      "format": "byte"
+    },
+    "code": {
+      "type": "integer",
+      "minimum": 1000,
+      "maximum": 4999
+    },
+    "reason": {
+      "type": "string",
+      "maxLength": 123
+    }
+  },
+  "additionalProperties": false
+}

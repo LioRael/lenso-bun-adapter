@@ -1,0 +1,22 @@
+{
+  "id": "lenso.websocket.endpoint@1",
+  "version": "1.0.0",
+  "portable": true,
+  "cross_lane_transfer": true,
+  "operations": [
+    {
+      "name": "describe_websocket",
+      "interaction": "request",
+      "request_schema": "schemas/describe-request.schema.json",
+      "response_schema": "schemas/describe-response.schema.json",
+      "domain_error_schema": "schemas/describe-error.schema.json"
+    },
+    {
+      "name": "connect_websocket",
+      "interaction": "stream",
+      "request_schema": "schemas/connect-open.schema.json",
+      "response_schema": "schemas/connect-frame.schema.json",
+      "domain_error_schema": "schemas/connect-error.schema.json"
+    }
+  ]
+}

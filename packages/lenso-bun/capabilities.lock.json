@@ -264,6 +264,17 @@
       "source_descriptor": "crates/lenso-capability-secrets/capability.json",
       "snapshot_descriptor": "contracts/secrets/capability.json",
       "typescript_projection": "src/capabilities/secrets.ts"
+    },
+    "lenso.websocket.endpoint@1": {
+      "descriptor_version": "1.0.0",
+      "export": "./capabilities/websocket-endpoint",
+      "source_package": "lenso-capability-websocket-endpoint",
+      "source_package_version": "0.1.0",
+      "source_repository": "https://github.com/LioRael/lenso-web",
+      "source_revision": "0425bd1cecd7ccd3df7bf698f148bf7a915e1f1f",
+      "source_descriptor": "crates/lenso-capability-websocket-endpoint/capability.json",
+      "snapshot_descriptor": "contracts/websocket-endpoint/capability.json",
+      "typescript_projection": "src/capabilities/websocket-endpoint.ts"
     }
   }
 }
