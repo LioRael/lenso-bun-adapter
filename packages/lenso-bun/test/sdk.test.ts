@@ -122,7 +122,7 @@ test("records the authoritative source of each generated Capability projection",
     new URL("../capabilities.lock.json", import.meta.url),
   ).json();
   expect(lock.schema_version).toBe(2);
-  expect(Object.keys(lock.capabilities)).toHaveLength(24);
+  expect(Object.keys(lock.capabilities)).toHaveLength(25);
   expect(lock.capabilities[CAPABILITY_ID]).toEqual({
     descriptor_version: DESCRIPTOR_VERSION,
     export: "./capabilities/jobs",
