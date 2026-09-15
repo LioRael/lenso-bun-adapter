@@ -1,6 +1,6 @@
 {
   "name": "@lenso/bun",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "The supported Bun authoring SDK for Lenso Plugins and official Capability projections.",
   "type": "module",
   "license": "MIT",
