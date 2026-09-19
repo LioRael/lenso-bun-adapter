@@ -1278,7 +1278,7 @@ dependencies = [
 
 [[package]]
 name = "lenso-bun-adapter"
-version = "0.1.10"
+version = "0.1.11"
 dependencies = [
  "axum",
  "base64",
@@ -1334,7 +1334,7 @@ dependencies = [
 
 [[package]]
 name = "lenso-host-runtime"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "lenso",
  "lenso-app-plan",
