@@ -705,16 +705,32 @@ fn bounded_callback_result(state: &CallbackState, result: impl Serialize) -> Res
     Ok(result)
 }
 
-fn rpc<T: DeserializeOwned>(
+fn rpc<T: DeserializeOwned + Send>(
     client: &HttpClient,
     method: &'static str,
     params: impl Serialize,
 ) -> Result<T, RuntimeFailure> {
-    json_rpc_runtime()?
-        .block_on(client.request(method, rpc_params![params]))
-        .map_err(|error| RuntimeFailure::PluginFailure {
-            detail: format!("Bun Authoring RPC {method} failed: {error}"),
-        })
+    let params = serde_json::to_value(params).map_err(|error| RuntimeFailure::Internal {
+        detail: error.to_string(),
+    })?;
+    let invoke = move || {
+        json_rpc_runtime()?
+            .block_on(client.request(method, rpc_params![params]))
+            .map_err(|error| RuntimeFailure::PluginFailure {
+                detail: format!("Bun Authoring RPC {method} failed: {error}"),
+            })
+    };
+    if tokio::runtime::Handle::try_current().is_ok() {
+        // Native preparation is synchronous. Keep the temporary runtime's
+        // creation, polling and destruction outside an ambient Tokio runtime.
+        std::thread::scope(|scope| scope.spawn(invoke).join()).map_err(|_| {
+            RuntimeFailure::Internal {
+                detail: "Bun Authoring RPC worker panicked".to_owned(),
+            }
+        })?
+    } else {
+        invoke()
+    }
 }
 
 fn random_32() -> Result<[u8; 32], RuntimeFailure> {
@@ -793,4 +809,35 @@ fn runtime_detail(error: RuntimeFailure) -> String {
     let detail = format!("{error:?}");
     drop(error);
     detail
+}
+
+#[cfg(test)]
+mod nested_runtime_regression {
+    #[tokio::test(flavor = "current_thread")]
+    async fn synchronous_authoring_rpc_works_inside_tokio() {
+        let server = tiny_http::Server::http("127.0.0.1:0").expect("bind fixture");
+        let url = format!("http://{}", server.server_addr());
+        let worker = std::thread::spawn(move || {
+            let mut request = server.recv().expect("request");
+            let body: serde_json::Value =
+                serde_json::from_reader(request.as_reader()).expect("JSON RPC");
+            let response =
+                serde_json::json!({"jsonrpc":"2.0","id":body["id"],"result":{"ready":true}});
+            request
+                .respond(
+                    tiny_http::Response::from_string(response.to_string()).with_header(
+                        tiny_http::Header::from_bytes("Content-Type", "application/json")
+                            .expect("header"),
+                    ),
+                )
+                .expect("respond");
+        });
+        let client = jsonrpsee::http_client::HttpClientBuilder::default()
+            .build(url)
+            .expect("client");
+        let result: serde_json::Value = super::rpc(&client, "describe", serde_json::json!({}))
+            .expect("RPC must not nest runtimes");
+        assert_eq!(result["ready"], true);
+        worker.join().expect("server");
+    }
 }
