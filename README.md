@@ -1,5 +1,11 @@
 # Lenso Bun SDK and Runtime
 
+> **Source location:** This repository retains pre-consolidation history. New
+> Rust Bun Adapter work belongs in [LioRael/lenso](https://github.com/LioRael/lenso),
+> and Bun SDK work belongs in [LioRael/lenso-js](https://github.com/LioRael/lenso-js),
+> under [ADR 0077](https://github.com/LioRael/lenso/blob/main/docs/adr/0077-consolidate-the-rust-main-chain-by-language-and-product.md).
+> The description below documents this historical checkout.
+
 The Bun authoring and execution surface for Lenso Plugins:
 
 - `@lenso/bun` is the supported authoring SDK. It combines the runtime with
